@@ -128,7 +128,7 @@ void PresetBrowser::rebuildRows()
         for (size_t k = 0; k < all.size(); ++k)
         {
             auto& pr = all[k];
-            if (activeBank != 0 && (1 + juce::jlimit(0, 7, pr.index / 16)) != activeBank) continue;
+            if (activeBank != 0 && pr.bank != activeBank) continue;
             if (q.isNotEmpty() && !pr.name.toLowerCase().contains(q)) continue;
             Row r;
             r.isUser = false; r.index = pr.index;

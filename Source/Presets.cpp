@@ -41,13 +41,35 @@ static juce::File factoryOverrideDir()
     return getUserPresetDir().getChildFile("Factory");
 }
 
-static bool parseFactoryFileName(const juce::String& fn, int& indexOut, juce::String& nameOut)
+static int bankIndexFor(const juce::String& tag)
+{
+    static const char* names[] = { "Bass", "Lead", "Pad", "Orch", "Keys", "Arp", "FX", "Classics" };
+    for (int i = 0; i < 8; ++i)
+        if (tag.equalsIgnoreCase(names[i]) || (i == 7 && tag.equalsIgnoreCase("Clsc")))
+            return i + 1;
+    return 0;
+}
+
+// "NNN Name [Bank].xml" — bank tag optional; untagged files fall back to
+// index ranges (bank 1 layout). Returns bank 1..8.
+static bool parseFactoryFileName(const juce::String& fn, int& indexOut, juce::String& nameOut, int& bankOut)
 {
     if (!fn.endsWithIgnoreCase(".xml") || fn.length() < 8) return false;
     if (!juce::CharacterFunctions::isDigit(fn[0]) || !juce::CharacterFunctions::isDigit(fn[1])
         || !juce::CharacterFunctions::isDigit(fn[2]) || fn[3] != ' ') return false;
     indexOut = fn.substring(0, 3).getIntValue();
-    nameOut = fn.substring(4, fn.length() - 4);
+    juce::String rest = fn.substring(4, fn.length() - 4);
+    bankOut = 0;
+    int ob = rest.lastIndexOfChar('[');
+    if (ob > 0 && rest.endsWithChar(']'))
+    {
+        juce::String tag = rest.substring(ob + 1, rest.length() - 1).trim();
+        int b = bankIndexFor(tag);
+        if (b > 0) { bankOut = b; rest = rest.substring(0, ob).trim(); }
+    }
+    nameOut = rest;
+    if (bankOut == 0)
+        bankOut = 1 + juce::jlimit(0, 7, indexOut / 16);
     return indexOut >= 0 && indexOut < 1000 && nameOut.isNotEmpty();
 }
 
@@ -63,9 +85,9 @@ void rescanFactoryPresets()
         if (!dir.isDirectory()) return;
         for (auto& f : dir.findChildFiles(juce::File::findFiles, false, "*.xml"))
         {
-            int idx; juce::String nm;
-            if (!parseFactoryFileName(f.getFileName(), idx, nm)) continue;
-            byIndex[idx] = { nm, f, idx, shadowed };
+            int idx, bank; juce::String nm;
+            if (!parseFactoryFileName(f.getFileName(), idx, nm, bank)) continue;
+            byIndex[idx] = { nm, f, idx, shadowed, bank };
         }
     };
     collect(factoryBundleDir(), false);

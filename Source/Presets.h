@@ -12,6 +12,7 @@ struct FactoryPreset
     juce::File file;
     int index = -1;
     bool shadowed = false; // user-overwritten copy shadows the shipped file
+    int bank = 0;          // effective bank 1..8 (tag or index fallback)
 };
 
 const std::vector<FactoryPreset>& getFactoryPresets(); // sorted by index

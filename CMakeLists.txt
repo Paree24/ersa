@@ -63,8 +63,11 @@ target_link_libraries(ERSA PRIVATE
 )
 
 # Ship factory presets inside the VST3 bundle (runtime resolves them
-# bundle-relative, with repo/dev fallbacks when run uninstalled)
+# bundle-relative, with repo/dev fallbacks when run uninstalled).
+# Wipe first: renames must not leave stale duplicates behind.
 add_custom_command(TARGET ERSA POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E remove_directory
+    "${CMAKE_CURRENT_BINARY_DIR}/ERSA_artefacts/$<CONFIG>/VST3/ERSA.vst3/Contents/Resources/Factory"
   COMMAND ${CMAKE_COMMAND} -E make_directory
     "${CMAKE_CURRENT_BINARY_DIR}/ERSA_artefacts/$<CONFIG>/VST3/ERSA.vst3/Contents/Resources/Factory"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
