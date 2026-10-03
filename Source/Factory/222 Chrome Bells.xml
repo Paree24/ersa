@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<ERSA>
+  <PARAM id="vco1wave" value="2"/>
+  <PARAM id="vco1range" value="2"/>
+  <PARAM id="vco1level" value="0.8"/>
+  <PARAM id="vco1pw" value="0.35"/>
+  <PARAM id="vco2wave" value="3"/>
+  <PARAM id="vco2range" value="2"/>
+  <PARAM id="vco2level" value="0.5"/>
+  <PARAM id="cutoff" value="3000"/>
+  <PARAM id="fenv" value="0.4"/>
+  <PARAM id="fa" value="0.003"/>
+  <PARAM id="fd" value="0.5"/>
+  <PARAM id="fs" value="0.3"/>
+  <PARAM id="aa" value="0.003"/>
+  <PARAM id="ad" value="0.5"/>
+  <PARAM id="as" value="0.3"/>
+  <PARAM id="ar" value="0.5"/>
+  <PARAM id="voicemode" value="0"/>
+  <PARAM id="velsens" value="0.6"/>
+  <PARAM id="dlon" value="1"/>
+  <PARAM id="dltime" value="375"/>
+  <PARAM id="dlfb" value="0.5"/>
+  <PARAM id="dlmix" value="0.35"/>
+  <PARAM id="rvon" value="1"/>
+  <PARAM id="rvmix" value="0.3"/>
+</ERSA>
