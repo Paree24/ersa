@@ -73,3 +73,4 @@ without ever touching the install bundle.
 - `Assets/` — embedded fonts + OFL notice
 - `Test/Harness.cpp` — headless regression suite (see `CHECKS.md` for coverage)
 - `CHECKS.md` — hard-won checklist: every bug class found during development
+- `LESSONS.md` — the full issue→fix log behind that checklist
