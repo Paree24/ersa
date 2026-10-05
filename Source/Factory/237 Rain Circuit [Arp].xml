@@ -24,6 +24,6 @@
   <PARAM id="velsens" value="0.4"/>
   <PARAM id="arpon" value="1"/>
   <PARAM id="arpmode" value="3"/>
-  <PARAM id="arpdiv" value="4"/>
+  <PARAM id="arpdiv" value="10.0"/>
   <PARAM id="arpoct" value="1"/>
 </ERSA>

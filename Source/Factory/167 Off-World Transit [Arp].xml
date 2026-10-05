@@ -21,7 +21,7 @@
   <PARAM id="velsens" value="0.4"/>
   <PARAM id="arpon" value="1"/>
   <PARAM id="arpmode" value="0"/>
-  <PARAM id="arpdiv" value="1"/>
+  <PARAM id="arpdiv" value="7.0"/>
   <PARAM id="arpoct" value="1"/>
   <PARAM id="dlon" value="1"/>
   <PARAM id="dltime" value="520"/>

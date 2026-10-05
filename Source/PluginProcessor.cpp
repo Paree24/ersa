@@ -71,7 +71,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     // Arp
     bf(P::ARP_ON, "Arp On", false);
     cf(P::ARP_MODE, "Arp Mode", {"Up","Down","UpDown","Random"}, 0);
-    cf(P::ARP_DIV, "Arp Division", {"1/4","1/8","1/8T","1/8D","1/16","1/16T","1/16D","1/32","1/4T","1/4D","1/2","1/2T","1/2D"}, 4);
+    cf(P::ARP_DIV, "Arp Division", {"1/2D","1/2","1/4D","1/2T","1/4","1/8D","1/4T","1/8","1/16D","1/8T","1/16","1/16T","1/32"}, 10);
     cf(P::ARP_OCT, "Arp Octave", {"1","2","3","4"}, 1);
     bf(P::ARP_HOLD, "Arp Hold", false);
     // Chorus
@@ -373,11 +373,11 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     bool arpOn = apvts.getRawParameterValue(P::ARP_ON)->load() > 0.5f;
     bool holdNow = apvts.getRawParameterValue(P::ARP_HOLD)->load() > 0.5f;
-    // host-synced divisions: steps per beat (straight, triplet, dotted).
-    // Indices 0-7 are the original set (kept stable: preset files store them);
-    // 8+ append the slower dotted/triplet values.
-    static constexpr float divMult[13] = { 1.0f, 2.0f, 3.0f, 1.3333f, 4.0f, 6.0f, 2.6667f, 8.0f,
-                                            1.5f, 0.6667f, 0.5f, 0.75f, 0.3333f };
+    // host-synced divisions: steps per beat (straight, triplet, dotted),
+    // sorted slow -> fast. NOTE: this order was resorted after release;
+    // factory XMLs were migrated old->new, see commit.
+    static constexpr float divMult[13] = { 0.3333f, 0.5f, 0.6667f, 0.75f, 1.0f, 1.3333f, 1.5f,
+                                           2.0f, 2.6667f, 3.0f, 4.0f, 6.0f, 8.0f };
     int arpDiv = juce::jlimit(0, 12, (int)std::round(apvts.getRawParameterValue(P::ARP_DIV)->load()));
 
     // unlatch: releasing HOLD (or switching arp off) clears latched notes

@@ -20,5 +20,5 @@
   <PARAM id="voicemode" value="1"/>
   <PARAM id="velsens" value="0.6"/>
   <PARAM id="arpon" value="1"/>
-  <PARAM id="arpdiv" value="4"/>
+  <PARAM id="arpdiv" value="10.0"/>
 </ERSA>

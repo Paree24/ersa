@@ -4,7 +4,7 @@
   <PARAM id="aa" value="0.4509999752044678"/>
   <PARAM id="ad" value="0.1500000059604645"/>
   <PARAM id="ar" value="1.299999952316284"/>
-  <PARAM id="arpdiv" value="4.0"/>
+  <PARAM id="arpdiv" value="10.0"/>
   <PARAM id="arphold" value="0.0"/>
   <PARAM id="arpmode" value="0.0"/>
   <PARAM id="arpoct" value="1.0"/>

@@ -22,7 +22,7 @@
   <PARAM id="velsens" value="0.4"/>
   <PARAM id="arpon" value="1"/>
   <PARAM id="arpmode" value="0"/>
-  <PARAM id="arpdiv" value="2"/>
+  <PARAM id="arpdiv" value="9.0"/>
   <PARAM id="arpoct" value="1"/>
   <PARAM id="chmix" value="0.4"/>
   <PARAM id="dlon" value="1"/>
