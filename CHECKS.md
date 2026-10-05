@@ -47,6 +47,13 @@ starting or modifying a plugin, especially after refactors.
 - [ ] Voice stealing: steal the QUIETEST voice + 3 ms crossfade from frozen output.
 - [ ] Smooth continuous params per-sample (cutoff, reso, levels, PW, volume,
       mix, tune, xmod, drive) + short slew on LFO output.
+- [ ] Smoothing targets must be snapshotted ONCE PER BLOCK into locals. Never
+      `sm += (p.x - sm) * k; p.x = sm;` inside the sample loop — after the
+      first sample the target reads back the state itself ((sm-sm)=0) and the
+      slew advances one sample-step per BLOCK (512x too slow). Symptom:
+      seconds-long "laser" glides after every preset/knob change, voices stuck
+      at mid-slew levels, phantom tones. (Members like bendSemis are safe —
+      only the read-then-overwrite of p.* self-cannibalises.)
 - [ ] Delay-line params (chorus mode/base/depth, reverb size): glide over
       tens of ms or mode switches zip.
 - [ ] Split pitch-glide from envelope-retrigger (mono/legato/arp each need

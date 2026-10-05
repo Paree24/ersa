@@ -71,7 +71,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     // Arp
     bf(P::ARP_ON, "Arp On", false);
     cf(P::ARP_MODE, "Arp Mode", {"Up","Down","UpDown","Random"}, 0);
-    cf(P::ARP_DIV, "Arp Division", {"1/4","1/8","1/8T","1/8D","1/16","1/16T","1/16D","1/32"}, 4);
+    cf(P::ARP_DIV, "Arp Division", {"1/4","1/8","1/8T","1/8D","1/16","1/16T","1/16D","1/32","1/4T","1/4D","1/2","1/2T","1/2D"}, 4);
     cf(P::ARP_OCT, "Arp Octave", {"1","2","3","4"}, 1);
     bf(P::ARP_HOLD, "Arp Hold", false);
     // Chorus
@@ -307,8 +307,16 @@ void Ersa8Processor::handleMidi(const juce::MidiMessage& msg)
     else if (msg.isPitchWheel())
     {
         int range = tmp.bendRange;
-        bendSemis = range == 0 ? 0.0f : ((float)msg.getPitchWheelValue() - 8192.0f) / 8192.0f * (float)range;
-        for (auto& v : voices) if (v.active) v.setTarget((float)v.note + bendSemis + tmp.tune / 100.0f);
+        if (range == 0) { bendSemis = 0.0f; return; }
+        int v = msg.getPitchWheelValue();
+        // center deadband: worn/noisy wheels hover a few LSBs off 8192; without
+        // this the synth sits micro-detuned, and each jitter event used to snap
+        // voice pitch instantly (= laser-zap). Inside the band we pin exact 0.
+        if (std::abs(v - 8192) <= 48) v = 8192;
+        bendSemis = ((float)v - 8192.0f) / 8192.0f * (float)range;
+        // NOTE: no immediate setTarget here on purpose. Held voices pick the
+        // bend up via the smoothed bendSm path in the render loop (~8 ms glide),
+        // so wheel jitter can never step the pitch discontinuously.
     }
     else if (msg.isAllNotesOff() || msg.isAllSoundOff())
     {
@@ -365,9 +373,12 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     bool arpOn = apvts.getRawParameterValue(P::ARP_ON)->load() > 0.5f;
     bool holdNow = apvts.getRawParameterValue(P::ARP_HOLD)->load() > 0.5f;
-    // host-synced divisions: steps per beat (straight, triplet, dotted)
-    static constexpr float divMult[8] = { 1.0f, 2.0f, 3.0f, 1.3333f, 4.0f, 6.0f, 2.6667f, 8.0f };
-    int arpDiv = juce::jlimit(0, 7, (int)std::round(apvts.getRawParameterValue(P::ARP_DIV)->load()));
+    // host-synced divisions: steps per beat (straight, triplet, dotted).
+    // Indices 0-7 are the original set (kept stable: preset files store them);
+    // 8+ append the slower dotted/triplet values.
+    static constexpr float divMult[13] = { 1.0f, 2.0f, 3.0f, 1.3333f, 4.0f, 6.0f, 2.6667f, 8.0f,
+                                            1.5f, 0.6667f, 0.5f, 0.75f, 0.3333f };
+    int arpDiv = juce::jlimit(0, 12, (int)std::round(apvts.getRawParameterValue(P::ARP_DIV)->load()));
 
     // unlatch: releasing HOLD (or switching arp off) clears latched notes
     if (lastArp && !arpOn)
@@ -412,6 +423,16 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     std::vector<float> mixL(numSamples, 0.0f), mixR(numSamples, 0.0f);
 
+    // per-block smoother targets (snapshot BEFORE the sample loop: the loop
+    // writes the smoothed values back into p.*, so reading p.* per-sample
+    // would see (sm-sm)=0 and freeze the slew after one step per block).
+    const float tCut = p.cutoff, tRes = p.reso;
+    const float tL1 = p.vco1level, tL2 = p.vco2level;
+    const float tPw1 = p.vco1pw, tPw2 = p.vco2pw;
+    const float tVol = p.volume, tT2 = p.vco2tune;
+    const float tMix1 = p.mix1, tMix2 = p.mix2;
+    const float tXmod = p.xmod, tDrive = p.drive;
+
     for (int s = 0; s < numSamples; ++s)
     {
         while (evIdx < evs.size() && evs[evIdx].pos == s) handleMidi(evs[evIdx++].msg);
@@ -427,19 +448,23 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
             arpCountdown--;
         }
 
-        // smooth continuous params toward their targets (preset/knob jumps glide)
-        smCut += (p.cutoff - smCut) * smK;     p.cutoff = smCut;
-        smRes += (p.reso - smRes) * smK;        p.reso = smRes;
-        smL1 += (p.vco1level - smL1) * smK;     p.vco1level = smL1;
-        smL2 += (p.vco2level - smL2) * smK;     p.vco2level = smL2;
-        smPw1 += (p.vco1pw - smPw1) * smK;      p.vco1pw = smPw1;
-        smPw2 += (p.vco2pw - smPw2) * smK;      p.vco2pw = smPw2;
-        smVol += (p.volume - smVol) * smK;      p.volume = smVol;
-        smT2 += (p.vco2tune - smT2) * smK;      p.vco2tune = smT2;
-        smMix1 += (p.mix1 - smMix1) * smK;      p.mix1 = smMix1;
-        smMix2 += (p.mix2 - smMix2) * smK;      p.mix2 = smMix2;
-        smXmod += (p.xmod - smXmod) * smK;      p.xmod = smXmod;
-        smDrive += (p.drive - smDrive) * smK;   p.drive = smDrive;
+        // smooth continuous params toward their targets (preset/knob jumps glide).
+        // NOTE: targets come from the per-block snapshot above, NOT from p.*
+        // (the loop writes smoothed values back into p.*, so reading p.* here
+        // would freeze every slew after a single sample-step per block — the
+        // old seconds-long "laser" glides after every preset/knob change).
+        smCut += (tCut - smCut) * smK;     p.cutoff = smCut;
+        smRes += (tRes - smRes) * smK;        p.reso = smRes;
+        smL1 += (tL1 - smL1) * smK;     p.vco1level = smL1;
+        smL2 += (tL2 - smL2) * smK;     p.vco2level = smL2;
+        smPw1 += (tPw1 - smPw1) * smK;      p.vco1pw = smPw1;
+        smPw2 += (tPw2 - smPw2) * smK;      p.vco2pw = smPw2;
+        smVol += (tVol - smVol) * smK;      p.volume = smVol;
+        smT2 += (tT2 - smT2) * smK;      p.vco2tune = smT2;
+        smMix1 += (tMix1 - smMix1) * smK;      p.mix1 = smMix1;
+        smMix2 += (tMix2 - smMix2) * smK;      p.mix2 = smMix2;
+        smXmod += (tXmod - smXmod) * smK;      p.xmod = smXmod;
+        smDrive += (tDrive - smDrive) * smK;   p.drive = smDrive;
         bendSm += (bendSemis - bendSm) * smK;   p.pitchBend = bendSm;
 
         float lfoVal = lfo.next(p.lfoRate, p.lfoWave, p.lfoDelay, rng);

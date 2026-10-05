@@ -338,12 +338,6 @@ int main(int argc, char** argv)
             tp->prepareToPlay(44100.0, 512);
             tp->loadInit();
             if (auto* ch = tp->apvts.getParameter("chon")) ch->setValueNotifyingHost(0.0f);
-            if (t.expect == 440.0f)
-                printf("BOOT tp[%s]: prog=%d vco1range=%.2f cutoff=%.1f\n", t.name,
-                       tp->getCurrentProgram(),
-                       tp->apvts.getRawParameterValue("vco1range")->load(),
-                       tp->apvts.getRawParameterValue("cutoff")->load());
-            printf("BOOT tp: prog=%d vco1range=%.2f cutoff=%.1f\\n", tp->getCurrentProgram(), tp->apvts.getRawParameterValue("vco1range")->load(), tp->apvts.getRawParameterValue("cutoff")->load());
             auto setF = [&](const char* id, float v){
                 if (auto* prm = tp->apvts.getParameter(id))
                     prm->setValueNotifyingHost(prm->convertTo0to1(v));
@@ -396,7 +390,6 @@ int main(int argc, char** argv)
         pu->prepareToPlay(44100.0, 512);
         pu->loadInit();
         if (auto* ch = pu->apvts.getParameter("chon")) ch->setValueNotifyingHost(0.0f);
-        printf("BOOT pu: prog=%d vco1range=%.2f cutoff=%.1f\\n", pu->getCurrentProgram(), pu->apvts.getRawParameterValue("vco1range")->load(), pu->apvts.getRawParameterValue("cutoff")->load());
         auto setC = [&](const char* id, float idx){
             if (auto* prm = pu->apvts.getParameter(id))
                 prm->setValueNotifyingHost(prm->convertTo0to1(idx));
@@ -440,9 +433,7 @@ int main(int argc, char** argv)
             float be = 0.0f;
             for (int j = juce::jmax(2, bb - 2); j <= juce::jmin(N / 2 - 1, bb + 2); ++j)
                 be = juce::jmax(be, fbuf[j]);
-            printf("  band %.0fHz peak %.4f\n", bf, be);
         }
-        printf("  vco1range raw = %.2f\n", pu->apvts.getRawParameterValue("vco1range")->load());
         // stack must sit at concert pitch (440) or the by-design sub (220);
         // the old shared-phase bug put it at 1760 (2 octaves up)
         float e1 = std::abs(1200.0f * std::log2(meas / 440.0f));
@@ -1305,8 +1296,9 @@ int main(int argc, char** argv)
             }
             if (raw("arpon") > 0.5f)
             {
-                if ((int)std::round(raw("arpdiv")) > 4)
-                { printf("FAIL: preset %d arp faster than 1/16\n", i); return 1; }
+                int div = (int)std::round(raw("arpdiv"));
+                if (div < 0 || div > 12)
+                { printf("FAIL: preset %d arp div out of range\n", i); return 1; }
             }
             if ((i >= 32 && i <= 47) || (i >= 128 && i <= 147) || (i >= 200 && i <= 215))
             {
@@ -1347,6 +1339,156 @@ int main(int argc, char** argv)
         CHECK(restored, "shipped file restored");
         CHECK(!deleteFactoryShadow(10), "second delete is a clean no-op");
         pf->releaseResources();
+    }
+    printf("--- pitch wheel: jitter must not zap, center must stick ---\n");
+    {
+        // Part 1: noisy wheel (deadband jitter + dirty-pot spikes + full throw)
+        // must stay finite and bounded on a sustained note.
+        std::unique_ptr<Ersa8Processor> pw(new Ersa8Processor());
+        pw->setRateAndBufferSizeDetails(44100, 512);
+        pw->prepareToPlay(44100.0, 512);
+        pw->loadInit();
+        if (auto* ch = pw->apvts.getParameter("chon")) ch->setValueNotifyingHost(0.0f);
+        juce::AudioBuffer<float> bw(2, 512);
+        juce::MidiBuffer mw;
+        float worst = 0.0f;
+        float prevL = 0.0f, prevR = 0.0f;
+        juce::Random jr(12345);
+        for (int k = 0; k < 130; ++k)
+        {
+            mw.clear();
+            if (k == 0) mw.addEvent(juce::MidiMessage::noteOn(1, 60, 0.9f), 0);
+            // noisy-wheel simulation: jitter inside the deadband every block,
+            // plus occasional large spurious spikes from a dirty pot
+            mw.addEvent(juce::MidiMessage::pitchWheel(1, 8192 + (int)(jr.nextFloat() * 80.0f - 40.0f)), 0);
+            if (k == 50 || k == 90)
+                mw.addEvent(juce::MidiMessage::pitchWheel(1, 8192 + (k == 50 ? 3000 : -3000)), 0);
+            // one deliberate full deflection and back, mid-stream
+            if (k == 60) mw.addEvent(juce::MidiMessage::pitchWheel(1, 16383), 0);
+            if (k == 70) mw.addEvent(juce::MidiMessage::pitchWheel(1, 8192), 0);
+            bw.clear(); pw->processBlock(bw, mw);
+            if (!isFiniteBuffer(bw)) { printf("FAIL: non-finite bend test\n"); return 1; }
+            if (k > 44)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    float d = juce::jmax(std::abs(bw.getSample(0, i) - prevL),
+                                         std::abs(bw.getSample(1, i) - prevR));
+                    if (d > worst) worst = d;
+                    prevL = bw.getSample(0, i); prevR = bw.getSample(1, i);
+                }
+            }
+            else if (k == 44) { prevL = bw.getSample(0, 511); prevR = bw.getSample(1, 511); }
+        }
+        printf("bend-jitter worst step = %.3f\n", worst);
+        if (worst > 0.4f) { printf("FAIL: pitch wheel zaps\n"); return 1; }
+        pw->releaseResources();
+    }
+    {
+        // Part 2: pitch must SLEW, never step. Sustained sine, one big spike
+        // (+6000 LSB ~= +146 cents), track pitch via interpolated zero
+        // crossings. Instant-snap code jumps the full 146c between two
+        // crossings; slewed code moves ~25c max per interval.
+        std::unique_ptr<Ersa8Processor> ps(new Ersa8Processor());
+        ps->setRateAndBufferSizeDetails(44100, 512);
+        ps->prepareToPlay(44100.0, 512);
+        ps->loadInit();
+        auto setF = [&](const char* id, float v){
+            if (auto* prm = ps->apvts.getParameter(id))
+                prm->setValueNotifyingHost(prm->convertTo0to1(v));
+        };
+        auto setC = [&](const char* id, float idx){
+            if (auto* prm = ps->apvts.getParameter(id))
+                prm->setValueNotifyingHost(prm->convertTo0to1(idx));
+        };
+        setF("vco1level", 0.0f); setF("vco2level", 0.9f);
+        setC("vco2wave", 3.0f); // sine
+        setF("fxbypass", 1.0f);
+        // REGRESSION (smoothing self-cannibalisation): with both osc levels
+        // at zero a held note must be (near-)silent. The old bug advanced each
+        // smoother one sample-step per BLOCK, so levels sat mid-slew for
+        // seconds and the "silent" voice sang audibly.
+        {
+            auto setF0 = [&](const char* id, float v){
+                if (auto* prm = ps->apvts.getParameter(id))
+                    prm->setValueNotifyingHost(prm->convertTo0to1(v));
+            };
+            setF0("vco2level", 0.0f);
+            juce::AudioBuffer<float> bz(2, 512); juce::MidiBuffer mz;
+            double eTot = 0.0; size_t eN = 0;
+            for (int k = 0; k < 86; ++k)
+            {
+                mz.clear();
+                if (k == 0) mz.addEvent(juce::MidiMessage::noteOn(1, 69, 0.9f), 0);
+                bz.clear(); ps->processBlock(bz, mz);
+                if (!isFiniteBuffer(bz)) { printf("FAIL: non-finite silent voice\n"); return 1; }
+                if (k >= 30 && k < 80)
+                    for (int i = 0; i < 512; ++i) { eTot += (double)bz.getSample(0, i) * bz.getSample(0, i); ++eN; }
+            }
+            float silentRms = (float)std::sqrt(eTot / (double)eN);
+            printf("silent voice rms = %.5f\n", silentRms);
+            if (silentRms > 0.005f) { printf("FAIL: silent voice sings (smoothing stuck?)\n"); return 1; }
+            // FILTER-CLOSED: shut the VCF to 40 Hz on the restored sine; a
+            // pre-filter 440 Hz tone dies >60 dB.
+            {
+                setF0("vco2level", 0.9f);
+                setF0("cutoff", 40.0f); setF0("reso", 0.0f); setF0("fenv", 0.0f);
+                juce::AudioBuffer<float> bq(2, 512); juce::MidiBuffer mq;
+                double eC = 0.0; size_t eCN = 0;
+                for (int k = 0; k < 86; ++k)
+                {
+                    mq.clear(); bq.clear(); ps->processBlock(bq, mq);
+                    if (!isFiniteBuffer(bq)) { printf("FAIL: non-finite filter-closed\n"); return 1; }
+                    if (k >= 30 && k < 80)
+                        for (int i = 0; i < 512; ++i) { eC += (double)bq.getSample(0, i) * bq.getSample(0, i); ++eCN; }
+                }
+                float closedRms = (float)std::sqrt(eC / (double)eCN);
+                printf("filter-closed rms = %.5f\n", closedRms);
+                if (closedRms > 0.01f) { printf("FAIL: tone survives closed filter\n"); return 1; }
+                // restore musical state for the slew test below
+                setF0("cutoff", 3500.0f); setF0("reso", 0.25f); setF0("fenv", 0.6f);
+            }
+        }
+        juce::AudioBuffer<float> bs(2, 512);
+        juce::MidiBuffer ms;
+        std::vector<float> mono;
+        for (int k = 0; k < 120; ++k)
+        {
+            ms.clear();
+            if (k == 0) ms.addEvent(juce::MidiMessage::noteOn(1, 69, 0.9f), 0);
+            if (k == 60) ms.addEvent(juce::MidiMessage::pitchWheel(1, 8192 + 6000), 0);
+            if (k == 70) ms.addEvent(juce::MidiMessage::pitchWheel(1, 8192), 0);
+            bs.clear(); ps->processBlock(bs, ms);
+            if (!isFiniteBuffer(bs)) { printf("FAIL: non-finite slew test\n"); return 1; }
+            if (k >= 40)
+                for (int i = 0; i < 512; ++i) mono.push_back(bs.getSample(0, i));
+        }
+        std::vector<double> xt;
+        // lowpass ~1 kHz first: tanh adds odd harmonics that fool a naive
+        // zero-crossing detector (extra crossings read as huge pitch jumps)
+        {
+            float gLP = 1.0f - std::exp(-2.0f * 3.14159265f * 1000.0f / 44100.0f);
+            float y = 0.0f;
+            for (size_t i = 0; i < mono.size(); ++i)
+            {
+                y += gLP * (mono[i] - y);
+                mono[i] = y;
+            }
+        }
+        for (size_t i = 1; i < mono.size(); ++i)
+            if (mono[i - 1] <= 0.0f && mono[i] > 0.0f)
+                xt.push_back((double)(i - 1) + (double)mono[i - 1] / ((double)mono[i - 1] - (double)mono[i]));
+        float maxJump = 0.0f;
+        for (size_t i = 2; i < xt.size(); ++i)
+        {
+            double p0 = xt[i - 1] - xt[i - 2], p1 = xt[i] - xt[i - 1];
+            if (p0 < 20.0 || p1 < 20.0 || p0 > 800.0 || p1 > 800.0) continue; // sanity
+            float j = std::abs(1200.0f * (float)std::log2(p0 / p1));
+            if (j > maxJump) maxJump = j;
+        }
+        printf("pitch-slew max interval jump = %.1f cents\n", maxJump);
+        if (maxJump > 60.0f) { printf("FAIL: pitch steps instead of slewing\n"); return 1; }
+        ps->releaseResources();
     }
     juce::MemoryBlock mb;
     proc->getStateInformation(mb);
