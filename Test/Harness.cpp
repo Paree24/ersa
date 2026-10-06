@@ -163,10 +163,10 @@ int main(int argc, char** argv)
 
     // determinism: preset 27 sets EQ high; preset 0 must reset it
     proc->setCurrentProgram(27);
-    CHECK(proc->apvts.getRawParameterValue("eqhigh")->load() == 4.0f, "preset 27 eqhigh set");
+    CHECK(std::abs(proc->apvts.getRawParameterValue("eqhigh")->load() - 4.0f) < 1e-3f, "preset 27 eqhigh set");
     proc->setCurrentProgram(0);
     printf("eqhigh after preset 0 = %f\n", proc->apvts.getRawParameterValue("eqhigh")->load());
-    CHECK(proc->apvts.getRawParameterValue("eqhigh")->load() == 0.0f, "preset 0 resets eqhigh");
+    CHECK(std::abs(proc->apvts.getRawParameterValue("eqhigh")->load()) < 1e-3f, "preset 0 resets eqhigh");
 
     juce::AudioBuffer<float> buf(2, block);
     juce::MidiBuffer midi;
@@ -518,12 +518,12 @@ int main(int argc, char** argv)
         p7->prepareToPlay(44100.0, 512);
         p7->setCurrentProgram(27);
         p7->loadInit();
-        CHECK(p7->apvts.getRawParameterValue("eqhigh")->load() == 0.0f, "init resets params");
-        CHECK(p7->apvts.getRawParameterValue("vco1wave")->load() == 1.0f, "init restores saw");
+        CHECK(std::abs(p7->apvts.getRawParameterValue("eqhigh")->load()) < 1e-3f, "init resets params");
+        CHECK(std::abs(p7->apvts.getRawParameterValue("vco1wave")->load() - 1.0f) < 1e-3f, "init restores saw");
         p7->setCurrentProgram(15); // Mono Growl
         CHECK(std::abs(p7->apvts.getRawParameterValue("xmod")->load() - 0.6f) < 1e-4f, "growl has cross-mod");
         CHECK(p7->apvts.getRawParameterValue("sync")->load() > 0.5f, "growl has sync");
-        CHECK(p7->apvts.getRawParameterValue("voicemode")->load() == 1.0f, "growl is mono");
+        CHECK(std::abs(p7->apvts.getRawParameterValue("voicemode")->load() - 1.0f) < 1e-3f, "growl is mono");
         // growl must snarl, not whisper
         juce::AudioBuffer<float> b7(2, 512);
         juce::MidiBuffer m7;

@@ -89,3 +89,32 @@ jobs:
         with:
           name: ERSA-${{ matrix.label }}-Standalone
           path: ${{ matrix.standalone }}
+
+  release:
+    name: Auto-release
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Zip bundles and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd artifacts
+          for d in ERSA-*/; do
+            n="${d%/}"
+            (cd "$n" && zip -qr "../${n}.zip" .)
+          done
+          ls *.zip
+          TAG="auto-build-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --title "Auto build $TAG" \
+            --notes "Automated CI build from ${{ github.sha }}. Personal project, provided as-is without warranty." \
+            *.zip

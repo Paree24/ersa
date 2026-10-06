@@ -207,7 +207,6 @@ remember analog-character features make exact-value asserts invalid —
 assert bands, not points.
 
 ## 20. Preset system grown out of code
-
 **Issue:** Needed a second 128-preset bank, editable/overwritable presets,
 and bank tags — without recompiling.
 **Fix:** Presets are now data files (`NNN Name [Bank].xml`), scanned at
@@ -216,3 +215,15 @@ runtime; user overwrites shadow (never modify) shipped files; DEL restores.
 **Avoid:** Ship content as data from day one. Bonus lesson: when reordering
 an indexed list (arp divisions slow→fast), migrate stored indices and
 preserve original file line-endings (CRLF→LF flip polluted a whole commit).
+
+## 21. Exact float equality in tests breaks on ARM (FMA contraction)
+
+**Issue:** Self-test passed on Linux/Windows x86-64 but failed on macOS ARM64
+at `CHECK(raw eqhigh == 4.0f)`.
+**Root cause:** JUCE 8 `getRawParameterValue` returns *denormalised* values,
+so the check round-trips 4.0 → normalized → back. ARM64 clang fuses
+multiply-add by default, landing on `4.0000005f` instead of exactly `4.0f`.
+The test (not the DSP) was wrong.
+**Fix:** All such checks now use epsilon comparison (`< 1e-3f`).
+**Avoid:** Never `==`-compare floats in tests, especially across a
+normalize/denormalize round-trip, and especially when CI spans x86 + ARM.
