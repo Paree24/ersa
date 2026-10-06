@@ -114,7 +114,7 @@ jobs:
           done
           ls *.zip
           TAG="auto-build-${{ github.run_number }}"
-          gh release create "$TAG" \
+          gh release create "$TAG" --repo "${{ github.repository }}" \
             --title "Auto build $TAG" \
             --notes "Automated CI build from ${{ github.sha }}. Personal project, provided as-is without warranty." \
             *.zip
