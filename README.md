@@ -9,8 +9,8 @@ oscillator → mixer → filter → amp signal flow, an extended effects section
 (chorus, phaser, tempo-syncable delay, modulated algorithmic reverb,
 tape/tube saturator, EQ), an arpeggiator with host-synced divisions, per-voice
 analog character (tolerances, drift, free-running oscillators), resonant
-low-pass filter (12/24 dB), 128 factory presets (editable data files, never
-compiled in), user preset save/load, and a full preset browser with search.
+low-pass filter (12/24 dB), 256 factory presets in two banks (editable data
+files, never compiled in), user preset save/load, and a full preset browser with search.
 
 ## License
 
@@ -53,23 +53,71 @@ without ever touching the install bundle.
 
 ### OS-specific notes
 
-- **Linux:** install deps first, e.g. on Debian/Ubuntu
-  `sudo apt install build-essential cmake ninja-build git pkg-config
-  libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxinerama-dev
-  libxrandr-dev libfreetype6-dev libfontconfig1-dev libcurl4-openssl-dev
-  libwebkit2gtk-4.1-dev`. Fedora/Arch: equivalent `-devel` packages.
-- **macOS:** Xcode command-line tools + CMake + Ninja
-  (`xcode-select --install`, `brew install cmake ninja`).
-  Codesigning/notarisation is out of scope for personal builds.
-- **Windows:** Visual Studio 2022 (Desktop C++ workload) + CMake + Ninja
-  (`-G "Visual Studio 17 2022"` works too). ASIO SDK not required.
+> Only the Linux build has actually been compiled and tested here. The macOS
+> and Windows steps below follow the standard JUCE/CMake flow and *should*
+> work, but if you hit an OS-specific snag, please file an issue with the
+> failing command and its full output.
+
+#### Linux (verified)
+
+1. Install dependencies (Debian/Ubuntu shown; Fedora/Arch: equivalent
+   `-devel` packages):
+   ```sh
+   sudo apt install build-essential cmake ninja-build git pkg-config \
+     libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev \
+     libxinerama-dev libxrandr-dev libfreetype6-dev libfontconfig1-dev \
+     libcurl4-openssl-dev libwebkit2gtk-4.1-dev
+   ```
+2. Configure + build (JUCE is fetched automatically — needs network access):
+   ```sh
+   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+   cmake --build build --config Release
+   ```
+3. Run the self-test (must print `ALL OK`):
+   ```sh
+   ./build/ErsaHarness_artefacts/Release/ErsaHarness
+   ```
+4. Install: copy `build/ERSA_artefacts/Release/VST3/ERSA.vst3` to `~/.vst3/`
+   (factory presets travel inside the bundle), then rescan plugins in your DAW.
+
+#### macOS (not yet built here)
+
+1. Install Xcode command-line tools, CMake, Ninja and Git:
+   ```sh
+   xcode-select --install
+   brew install cmake ninja git
+   ```
+2. Same configure + build as Linux. For a universal (Intel + Apple Silicon)
+   binary, add `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` to the configure step.
+3. Run `./build/ErsaHarness_artefacts/Release/ErsaHarness` — expect `ALL OK`.
+4. Install: copy `ERSA.vst3` to `~/Library/Audio/Plug-Ins/VST3/`. These are
+   unsigned personal builds: if macOS refuses to load them, ad-hoc sign with
+   `codesign --force --deep -s - <path>` and/or strip the quarantine flag
+   with `xattr -dr com.apple.quarantine <path>`. Codesigning/notarisation for
+   distribution is out of scope for this project.
+
+#### Windows (not yet built here)
+
+1. Install Visual Studio 2022 with the **Desktop development with C++**
+   workload (MSVC v143 or newer), plus CMake, Ninja and Git
+   (`winget install Kitware.CMake Ninja-build.Ninja Git.Git` works).
+2. Open an **x64 Native Tools Command Prompt** (so MSVC is on `PATH`), then
+   the same configure + build commands as Linux. Alternatively use the
+   Visual Studio generator instead of Ninja:
+   ```bat
+   cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+   cmake --build build --config Release
+   ```
+3. Run `build\ErsaHarness_artefacts\Release\ErsaHarness.exe` — expect `ALL OK`.
+4. Install: copy `ERSA.vst3` to `C:\Program Files\Common Files\VST3\`, then
+   rescan plugins in your DAW. No ASIO SDK or extra setup required.
 
 ## Repository layout
 
 - `Source/` — plugin DSP, UI, preset backend
   (`DSPEngine.h` voices/filters/FX, `PluginProcessor.*`, `PluginEditor.*`,
   `PresetBrowser.*`, `Parameters.h`, `ErsaLookAndFeel.*`)
-- `Source/Factory/*.xml` — the 128 factory presets (data, editable by hand)
+- `Source/Factory/*.xml` — the 256 factory presets (data, editable by hand)
 - `Assets/` — embedded fonts + OFL notice
 - `Test/Harness.cpp` — headless regression suite (see `CHECKS.md` for coverage)
 - `CHECKS.md` — hard-won checklist: every bug class found during development
