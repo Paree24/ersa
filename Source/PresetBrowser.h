@@ -6,7 +6,8 @@
 class Ersa8Processor;
 
 // Full preset browser overlay: search + bank filter + audition list,
-// factory bank plus user presets saved on disk.
+// factory bank plus user presets saved on disk. Inline name field + SAVE
+// (no pop-up); saving over an existing user preset needs a second click.
 class PresetBrowser : public juce::Component,
                       private juce::ListBoxModel,
                       private juce::TextEditor::Listener
@@ -20,6 +21,7 @@ public:
 
     std::function<void()> onClose;
     std::function<void()> onPresetChanged; // fired after any load (factory or user)
+    std::function<juce::String()> currentName; // name shown in the header (prefills SAVE)
     juce::String lastLoadedName;
     bool lastLoadedIsUser = false;
 
@@ -34,10 +36,14 @@ private:
 
     void rebuildRows();
     void refreshBankButtons();
+    void clickSave();
+    void setOverwriteArmed(bool on);
+    void saveAs(const juce::String& name);
 
     Ersa8Processor& proc;
     ErsaLookAndFeel& lnf;
-    juce::TextEditor search;
+    juce::TextEditor search, nameBox; // nameBox: inline save name
+    bool overwriteArmed = false;
     juce::ListBox list { "presets", this };
     juce::TextButton closeBtn { "X" };
     juce::TextButton saveBtn { "SAVE" };

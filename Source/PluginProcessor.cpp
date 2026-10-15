@@ -116,6 +116,7 @@ Ersa8Processor::Ersa8Processor()
       apvts(*this, nullptr, "ERSA", createParameterLayout())
 {
     rng.setSeedRandomly();
+    arpNotes.reserve(128 * 4);
     loadPreset(0); // boot to preset 000, not the init patch (state restore overrides after)
 }
 
@@ -142,6 +143,11 @@ void Ersa8Processor::prepareToPlay(double sampleRate, int samplesPerBlock)
     subHP2.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 20.0f, 0.7071f);
     subHP2.prepare(spec);
     lfoSm = 0.0f;
+    // scratch buffers sized up front: no heap allocation on the audio thread
+    mixL.assign((size_t)juce::jmax(1, samplesPerBlock), 0.0f);
+    mixR.assign((size_t)juce::jmax(1, samplesPerBlock), 0.0f);
+    lastEqLow = lastEqHigh = 1.0e9f; // force first coefficient update
+    arpSamplesToNext = 0.0;
     // snap smoothers to current values so the first block is already settled
     SynthParams d0 = collectParams();
     smCut = d0.cutoff; smRes = d0.reso; smL1 = d0.vco1level; smL2 = d0.vco2level;
@@ -251,6 +257,10 @@ void Ersa8Processor::handleMidi(const juce::MidiMessage& msg)
         int n = msg.getNoteNumber();
         float vel = msg.getFloatVelocity();
         bool arpOn = apvts.getRawParameterValue(P::ARP_ON)->load() > 0.5f;
+        // first key of a phrase (nothing held/gated): re-arm the LFO delay fade
+        bool anyGated = false;
+        for (auto& v : voices) if (v.active && !v.isReleasing()) { anyGated = true; break; }
+        if (!anyGated && heldNotes.empty()) lfo.noteOn();
         if (arpOn) { updateHeld(n, true); }
         else if (tmp.voiceMode == 2) // legato
         {
@@ -294,7 +304,7 @@ void Ersa8Processor::handleMidi(const juce::MidiMessage& msg)
             {
                 int last = heldNotes.back();
                 voices[0].note = last;
-                voices[0].setTarget((float)last + bendSemis + tmp.tune / 100.0f);
+                voices[0].setTarget((float)last + tmp.tune / 100.0f);
             }
             else voices[0].noteOff();
         }
@@ -332,20 +342,17 @@ void Ersa8Processor::arpStep()
     SynthParams p = collectParams();
     int octs = 1 + (int)std::round(apvts.getRawParameterValue(P::ARP_OCT)->load());
     int mode = (int)std::round(apvts.getRawParameterValue(P::ARP_MODE)->load());
-    std::vector<int> seq;
-    auto pushOct = [&](const std::vector<int>& base){
-        for (int o = 0; o < octs; ++o)
-            for (int n : base) seq.push_back(std::min(127, n + o * 12));
-    };
-    if (mode == 0) pushOct(heldNotes);
-    else if (mode == 1) { std::vector<int> d = heldNotes; std::reverse(d.begin(), d.end()); pushOct(d); }
-    else if (mode == 2)
+    // build the step list in a pre-reserved member (no audio-thread allocation)
+    auto& seq = arpNotes;
+    seq.clear();
+    const int nh = (int)heldNotes.size();
+    for (int o = 0; o < octs; ++o)
     {
-        std::vector<int> ud = heldNotes;
-        for (int i = (int)heldNotes.size() - 2; i > 0; --i) ud.push_back(heldNotes[(size_t)i]);
-        pushOct(ud);
+        auto push = [&](int i) { seq.push_back(std::min(127, heldNotes[(size_t)i] + o * 12)); };
+        if (mode == 1)      for (int i = nh - 1; i >= 0; --i) push(i);
+        else if (mode == 2) { for (int i = 0; i < nh; ++i) push(i); for (int i = nh - 2; i > 0; --i) push(i); }
+        else                for (int i = 0; i < nh; ++i) push(i); // up; random picks below
     }
-    else pushOct(heldNotes); // random handled below
     if (seq.empty()) return;
     int idx;
     if (mode == 3) idx = (int)(rng.nextFloat() * (float)seq.size());
@@ -358,7 +365,7 @@ void Ersa8Processor::arpStep()
     if (wasActive && !glide) freezeVoice(0);
     voices[0].noteOn(n, 0.9f, p, glide, true);
     voices[0].note = n;
-    voices[0].setTarget((float)n + bendSemis + p.tune / 100.0f);
+    voices[0].setTarget((float)n + p.tune / 100.0f);
     arpNoteActive = true; arpCurrentNote = n;
 }
 
@@ -366,6 +373,9 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 {
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
+    // UI-thread requests are executed here, on the audio thread (no data race)
+    if (panicRequest.exchange(false)) doPanic();
+    if (initRequest.exchange(false)) doInitReset();
     SynthParams p = collectParams();
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
@@ -396,10 +406,11 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     int numSamples = buffer.getNumSamples();
     float* outL = buffer.getWritePointer(0);
     float* outR = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
-    // --- collect midi events with sample positions ---
-    struct Ev { int pos; juce::MidiMessage msg; };
-    std::vector<Ev> evs;
-    for (auto m : midi) evs.push_back({ m.samplePosition, m.getMessage() });
+    if ((int)mixL.size() < numSamples) { mixL.resize((size_t)numSamples); mixR.resize((size_t)numSamples); } // host exceeded prepare size
+    std::fill(mixL.begin(), mixL.begin() + numSamples, 0.0f);
+    std::fill(mixR.begin(), mixR.begin() + numSamples, 0.0f);
+    auto midiIt = midi.cbegin();
+    const auto midiEnd = midi.cend();
 
     bool monoLike = (p.voiceMode != 0);
     // voice-mode switch with hanging notes: release everything so no voice
@@ -412,16 +423,13 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
         if (arpNoteActive) { voices[0].noteOff(); arpNoteActive = false; arpCurrentNote = -1; }
     }
 
-    size_t evIdx = 0;
-    int arpCountdown = arpSamplesToNext;
+    double arpCountdown = arpSamplesToNext; // fractional: no tempo drift from rounding
 
     // per-sample smoothing coeffs (~8 ms) for click/zipper-prone params
     float smK = 1.0f - std::exp(-1.0f / (0.008f * (float)cachedSr));
     // LFO edge slew (~4 ms): keeps character, removes wrap discontinuities.
     // Slow squares still articulate (that's their job) but lose the hard edge.
     float lfoK = 1.0f - std::exp(-1.0f / (0.004f * (float)cachedSr));
-
-    std::vector<float> mixL(numSamples, 0.0f), mixR(numSamples, 0.0f);
 
     // per-block smoother targets (snapshot BEFORE the sample loop: the loop
     // writes the smoothed values back into p.*, so reading p.* per-sample
@@ -435,17 +443,19 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     for (int s = 0; s < numSamples; ++s)
     {
-        while (evIdx < evs.size() && evs[evIdx].pos == s) handleMidi(evs[evIdx++].msg);
+        // '<=' (not '=='): an out-of-order/negative timestamp can't stall the queue
+        while (midiIt != midiEnd && (*midiIt).samplePosition <= s) { handleMidi((*midiIt).getMessage()); ++midiIt; }
 
         if (arpOn)
         {
-            if (arpCountdown <= 0)
+            if (arpCountdown <= 0.0)
             {
                 arpStep();
-                float stepsPerSec = (float)(hostBpm / 60.0) * divMult[arpDiv];
-                arpCountdown = (int)(cachedSr / std::max(0.1f, stepsPerSec));
+                double stepsPerSec = (hostBpm / 60.0) * (double)divMult[arpDiv];
+                arpCountdown += cachedSr / std::max(0.1, stepsPerSec);
+                if (arpCountdown <= 0.0) arpCountdown = 1.0;
             }
-            arpCountdown--;
+            arpCountdown -= 1.0;
         }
 
         // smooth continuous params toward their targets (preset/knob jumps glide).
@@ -467,6 +477,8 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
         smDrive += (tDrive - smDrive) * smK;   p.drive = smDrive;
         bendSm += (bendSemis - bendSm) * smK;   p.pitchBend = bendSm;
 
+        if (s == 0) // envelope knobs reach held notes (once per block is plenty)
+            for (auto& v : voices) if (v.active) v.updateEnvParams(p);
         float lfoVal = lfo.next(p.lfoRate, p.lfoWave, p.lfoDelay, rng);
         lfoSm += (lfoVal - lfoSm) * lfoK;
         lfoVal = lfoSm;
@@ -486,9 +498,12 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
             mixR[(size_t)s] += vs * gR * (1.0f - st) + stealBufR[vi] * st;
         }
         // refresh per-sample-varying params cheaply
-        for (auto& v : voices) if (v.active) v.setTarget((float)v.note + bendSm + p.tune / 100.0f);
+        for (auto& v : voices) if (v.active) v.setTarget((float)v.note + p.tune / 100.0f);
     }
     arpSamplesToNext = arpCountdown;
+    // events stamped at/after the block end (out-of-spec hosts) still land:
+    // dropping a note-off here used to leave a stuck note
+    while (midiIt != midiEnd) { handleMidi((*midiIt).getMessage()); ++midiIt; }
     midi.clear();
 
     // stereo-ize + master
@@ -516,10 +531,12 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
             if (p.dlSync != 0)
             {
                 double beat = 60.0 / std::max(20.0, hostBpm);
-                if (p.dlSync == 1) t = (float)(beat * 0.375 * 1000.0);
-                else if (p.dlSync == 2) t = (float)(beat * 0.5625 * 1000.0);
-                else if (p.dlSync == 3) t = (float)(beat * 0.75 * 1000.0);
-                else t = (float)(beat * 1.5 * 1000.0);
+                // 1/8 = half a beat, 1/8D = 3/4, 1/4 = one beat, 1/2 = two
+                // (all four used to be 25% short: "1/4" played a dotted 1/8)
+                if (p.dlSync == 1) t = (float)(beat * 0.5 * 1000.0);
+                else if (p.dlSync == 2) t = (float)(beat * 0.75 * 1000.0);
+                else if (p.dlSync == 3) t = (float)(beat * 1.0 * 1000.0);
+                else t = (float)(beat * 2.0 * 1000.0);
             }
             delay.process(outL, outR, numSamples, t, p.dlFb, p.dlMix);
         }
@@ -528,11 +545,22 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
         if (p.stOn && outR)
             sat.process(outL, outR, numSamples, p.stAmt, 0.75f, 1.0f, p.stMode);
         // EQ post (uses rate cached from prepareToPlay — never trust getSampleRate here)
-        lowShelf.coefficients  = juce::dsp::IIR::Coefficients<float>::makeLowShelf(cachedSr, 220.0f, 0.7f,
-                            juce::Decibels::decibelsToGain(p.eqLow));
-        highShelf.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf(cachedSr, 5200.0f, 0.7f,
-                            juce::Decibels::decibelsToGain(p.eqHigh));
-        if (std::abs(p.eqLow) > 0.05f || std::abs(p.eqHigh) > 0.05f)
+        // coefficients rewritten in place, only when the gain changes (the old
+        // per-block make*() heap-allocated on the audio thread)
+        if (p.eqLow != lastEqLow)
+        {
+            *lowShelf.coefficients = juce::dsp::IIR::ArrayCoefficients<float>::makeLowShelf(cachedSr, 220.0f, 0.7f,
+                                        juce::Decibels::decibelsToGain(p.eqLow));
+            lastEqLow = p.eqLow;
+        }
+        if (p.eqHigh != lastEqHigh)
+        {
+            *highShelf.coefficients = juce::dsp::IIR::ArrayCoefficients<float>::makeHighShelf(cachedSr, 5200.0f, 0.7f,
+                                        juce::Decibels::decibelsToGain(p.eqHigh));
+            lastEqHigh = p.eqHigh;
+        }
+        // always run: unity shelves are transparent, and switching the filters
+        // in/out around a threshold used to jump their state (click)
         {
             juce::dsp::AudioBlock<float> block(buffer);
             juce::dsp::ProcessContextReplacing<float> ctx(block);
@@ -604,7 +632,13 @@ void Ersa8Processor::loadInit()
     for (auto* param : getParameters())
         if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(param))
             ranged->setValueNotifyingHost(ranged->getDefaultValue());
-    // stop any hanging performance state so init is truly clean
+    // performance state (voices, FX tails) is owned by the audio thread:
+    // request the reset, processBlock performs it before rendering
+    initRequest = true;
+}
+
+void Ersa8Processor::doInitReset()
+{
     heldNotes.clear();
     bendSemis = 0.0f;
     for (auto& v : voices) v.noteOff();
@@ -612,12 +646,14 @@ void Ersa8Processor::loadInit()
     delay.clear(); reverb.clear(); sat.reset(); chorus.clear(); phaser.clear();
 }
 
-void Ersa8Processor::panic()
+void Ersa8Processor::panic() { panicRequest = true; } // executed on the audio thread
+
+void Ersa8Processor::doPanic()
 {
     heldNotes.clear();
     bendSemis = 0.0f; bendSm = 0.0f;
     for (auto& v : voices) v.kill();
-    arpNoteActive = false; arpCurrentNote = -1; arpStepIdx = 0; arpSamplesToNext = 0;
+    arpNoteActive = false; arpCurrentNote = -1; arpStepIdx = 0; arpSamplesToNext = 0.0;
     for (int i = 0; i < kVoices; ++i) stealLeft[i] = 0;
     delay.clear(); reverb.clear(); sat.reset(); chorus.clear(); phaser.clear();
     lowShelf.reset(); highShelf.reset(); subHP.reset(); subHP2.reset();

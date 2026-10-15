@@ -43,7 +43,11 @@ struct SynthParams
 class EnvADSR
 {
 public:
-    void setSampleRate(double sr) { sampleRate = sr; }
+    void setSampleRate(double sr)
+    {
+        sampleRate = sr;
+        kSus = 1.0f - std::exp(-1.0f / (0.010f * (float)sr)); // ~10 ms sustain glide
+    }
     void setParams(float a, float d, float s, float r)
     {
         // seconds, with sensible minimums
@@ -77,7 +81,7 @@ public:
                 if (std::fabs(level - sus) < 0.002f) { level = sus; state = State::Sustain; }
                 return level;
             }
-            case State::Sustain: level = sus; return sus;
+            case State::Sustain: level += (sus - level) * kSus; return level; // live knob: glide, never step
             case State::Release: {
                 float kr = std::exp(-3.0f / (rel * (float)sampleRate));
                 level *= kr;
@@ -92,6 +96,7 @@ private:
     State state = State::Idle;
     double sampleRate = 44100.0;
     float att = 0.01f, dec = 0.2f, sus = 0.7f, rel = 0.3f, level = 0.0f;
+    float kSus = 0.002f;
 };
 
 inline float polyblep(double phase, double dt)
@@ -231,7 +236,9 @@ public:
         }
         return raw * fade;
     }
-    void noteOn() { if (true) { /* keep free-running; reset delay */ delayCount = 0; } }
+    // re-arm the delayed fade-in (phase keeps free-running). Called on the first
+    // key of a phrase — without this LFO DELAY only ever faded in once at load.
+    void noteOn() { delayCount = 0; }
 private:
     double sampleRate = 44100.0, phase = 0.0;
     float snhValue = 0.0f;
@@ -266,7 +273,9 @@ public:
     {
         bool wasActive = active; // live voice = keep everything running (analog-style)
         note = midiNote; velocity = vel; active = true; gated = true;
-        float target = (float)midiNote + p.pitchBend + p.tune / 100.0f;
+        // pitch bend is NOT part of the target: it is added at render time so the
+        // wheel responds instantly instead of crawling through portamento
+        float target = (float)midiNote + p.tune / 100.0f;
         if (!glide)
         {
             curMidi1 = target; curMidi2 = target;
@@ -290,6 +299,7 @@ public:
                 subPh = rng.nextFloat();
                 vcf.reset();
                 clickCount = 0;
+                gateAmp = 0.0f;
             }
             // else: retrigger on a live voice — oscs/filter keep running, pitch
             // snaps, envelopes restart from current level: no dip, no thump
@@ -304,6 +314,12 @@ public:
     }
 
     void noteOff() { gated = false; fenv.noteOff(); aenv.noteOff(); }
+    // live envelope edits (knob turns) reach held/releasing notes too
+    void updateEnvParams(const SynthParams& p)
+    {
+        fenv.setParams(p.fa, p.fd, p.fs, p.fr);
+        aenv.setParams(p.aa, p.ad, p.as, p.ar);
+    }
     void kill() { active = false; fenv.reset(); aenv.reset(); }
     bool isReleasing() const { return !gated; }
     bool envDone() const { return !fenv.isActive() && !aenv.isActive(); }
@@ -323,9 +339,15 @@ public:
 
         float fenvV = fenv.next();
         float aenvV = aenv.next();
-        if (!fenv.isActive() && !aenv.isActive() && !gated)
+        // GATE mode: fixed ~3 ms on/off ramp. It used to hold full level for the
+        // whole amp-env release and then hard-cut the voice (click + wrong length).
+        float gk = 1.0f - std::exp(-1.0f / (0.003f * (float)sampleRate));
+        gateAmp += ((gated ? 1.0f : 0.0f) - gateAmp) * gk;
+        bool done = (p.vcaMode == 1) ? (!fenv.isActive() && !aenv.isActive())
+                                     : (gateAmp < 1.0e-4f);
+        if (done && !gated)
         {
-            active = false; lastSample = 0.0f; return 0.0f;
+            active = false; lastSample = 0.0f; fenv.reset(); aenv.reset(); return 0.0f;
         }
 
         float pw1 = juce::jlimit(0.05f, 0.95f, p.vco1pw + p.vco1pwm * 0.4f * lfo);
@@ -345,8 +367,8 @@ public:
         double m1 = rangeMultiplier(p.vco1range);
         double m2 = rangeMultiplier(p.vco2range);
 
-        float v1 = midiToFreq(curMidi1 + lfoSemi1) * (float)m1;
-        float v2base = midiToFreq(curMidi2 + lfoSemi2 + p.vco2tune / 100.0f) * (float)m2;
+        float v1 = midiToFreq(curMidi1 + p.pitchBend + lfoSemi1) * (float)m1;
+        float v2base = midiToFreq(curMidi2 + p.pitchBend + lfoSemi2 + p.vco2tune / 100.0f) * (float)m2;
         // exact pow only for the (small, drifting) base detune; taps use cheap mults
         // NOTE: det1/det2 are in semitones -> /12 for octave ratio (12x bug if omitted!)
         float base1 = (float)std::pow(2.0, det1 / 12.0);
@@ -359,26 +381,37 @@ public:
         float sum1 = 0.0f, sum2 = 0.0f, norm1 = 0.0f, norm2 = 0.0f;
         float dummy = 0.0f;
         float kTap = 1.0f - std::exp(-1.0f / (0.005f * (float)sampleRate));
-        for (int u = 0; u < p.tapN; ++u)
+        // all 4 taps are visited so a tap being switched OFF fades out over ~5 ms
+        // instead of being cut (it used to stop rendering the instant the count
+        // dropped, and its gain froze at the old value for the next fade-in).
+        for (int u = 0; u < 4; ++u)
         {
             float t1 = (u < p.u1) ? 1.0f : 0.0f;
             float t2 = (u < p.u2) ? 1.0f : 0.0f;
             tapG1[u] += (t1 - tapG1[u]) * kTap;
             tapG2[u] += (t2 - tapG2[u]) * kTap;
+            if (t1 == 0.0f && tapG1[u] < 1.0e-4f) tapG1[u] = 0.0f;
+            if (t2 == 0.0f && tapG2[u] < 1.0e-4f) tapG2[u] = 0.0f;
+            bool on1 = tapG1[u] > 0.0f, on2 = tapG2[u] > 0.0f;
+            if (!on1 && !on2) continue;
             norm1 += tapG1[u]; norm2 += tapG2[u];
             double f2u = (double)v2base * (double)base2 * (double)p.tapM2[u];
             double dt2 = f2u / sampleRate;
             uph2[u] += dt2; if (uph2[u] >= 1.0) uph2[u] -= 1.0;
-            float s2 = (u < p.u2) ? oscSampleVCO2(p.vco2wave, uph2[u], pw2, dt2, rng) : 0.0f;
-            // XMOD: VCO1 frequency modulated by VCO2 output
+            float s2 = on2 ? oscSampleVCO2(p.vco2wave, uph2[u], pw2, dt2, rng) : 0.0f;
+            // XMOD: VCO1 frequency modulated by VCO2 output. Through-zero: the
+            // phase may run backwards on deep settings. (A 1 Hz floor here used to
+            // clip the negative swing and drag the pitch sharp above xmod 0.4.)
             double f1u = (double)v1 * (double)base1 * (double)p.tapM1[u];
             double f1m = f1u;
             if (p.xmod > 0.001f)
-                f1m = std::max(1.0, f1u * (1.0 + p.xmod * 2.5 * s2));
+                f1m = f1u * (1.0 + p.xmod * 2.5 * s2);
             double dt1m = f1m / sampleRate;
             uph1[u] += dt1m;
-            if (uph1[u] >= 1.0) { uph1[u] -= 1.0; if (p.sync) uph2[u] = 0.0; }
-            float s1 = (u < p.u1) ? oscSample(p.vco1wave, uph1[u], pw1, dt1m, dummy, rng) : 0.0f;
+            if (uph1[u] >= 1.0) { uph1[u] -= std::floor(uph1[u]); if (p.sync) uph2[u] = 0.0; }
+            else if (uph1[u] < 0.0) uph1[u] -= std::floor(uph1[u]);
+            double blepDt = juce::jlimit(1.0e-9, 0.5, std::abs(dt1m));
+            float s1 = on1 ? oscSample(p.vco1wave, uph1[u], pw1, blepDt, dummy, rng) : 0.0f;
 
             sum1 += s1 * tapG1[u]; sum2 += s2 * tapG2[u];
         }
@@ -407,6 +440,7 @@ public:
             hpfY = alpha * (hpfY + osc - hpfX); hpfX = osc;
             osc = hpfY;
         }
+        else { hpfX = osc; hpfY = 0.0f; } // primed: engaging the HPF starts settled
 
         // VCF cutoff w/ env, lfo, keytrack, velocity
         float envAmt = p.fenv * (1.0f + p.velsens * (velocity - 0.7f));
@@ -428,9 +462,9 @@ public:
         warmY += warmG * (filtered - warmY);
         filtered = warmY;
 
-        float amp = (p.vcaMode == 1) ? aenvV : 1.0f;
+        float amp = (p.vcaMode == 1) ? aenvV : gateAmp;
         float ampVel = (1.0f - 0.7f * p.velsens) + 0.7f * p.velsens * velocity;
-        lastAmp = aenvV;
+        lastAmp = amp;
         // ~2 ms raised-cosine fade on fresh attacks: kills phase-discontinuity pops
         float clickG = 1.0f;
         if (clickCount < 96)
@@ -462,6 +496,7 @@ private:
     double subPh = 0.0;
     int clickCount = 96; // de-click fade progress (>=96 = idle)
     float lastAmp = 0.0f;
+    float gateAmp = 0.0f;    // GATE-mode VCA level (short ramp, follows the key)
     float lastSample = 0.0f; // last rendered output (for steal crossfades)
     float tapG1[4] = { 1.0f, 1.0f, 1.0f, 1.0f }; // smoothed unison tap gains
     float tapG2[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -520,7 +555,10 @@ private:
         float samples = (float)(ms * sampleRate / 1000.0);
         float rp = (float)pos - samples;
         while (rp < 0) rp += len;
-        int i0 = (int)rp; float frac = rp - i0;
+        // a tiny negative rp + len can round to exactly len in float: wrap the
+        // index too, or this reads one past the buffer (garbage -> random click)
+        int i0 = (int)rp; float frac = rp - (float)i0;
+        if (i0 >= len) { i0 -= len; frac = 0.0f; }
         int i1 = (i0 + 1) % len;
         return buf[(size_t)i0] * (1 - frac) + buf[(size_t)i1] * frac;
     }
@@ -743,24 +781,34 @@ public:
     void prepare(double sr)
     {
         sampleRate = sr;
-        int maxLen = (int)(sr * 2.0) + 16;
+        int maxLen = (int)(sr * 3.1) + 16; // synced 1/2 at 40 BPM = 3 s
         bufL.assign(maxLen, 0.0f); bufR.assign(maxLen, 0.0f);
         len = maxLen; pos = 0; lpL = lpR = 0.0f;
+        curSamples = -1.0f;
+        kTime = 1.0f - std::exp(-1.0f / (0.080f * (float)sr));
+        // ~2 kHz damping in the repeats (was a fixed 0.25/sample: sr-dependent)
+        kDamp = 1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 2000.0f / (float)sr);
     }
     void process(float* L, float* R, int n, float timeMs, float fb, float mix)
     {
         if (mix <= 0.001f) return;
-        timeMs = juce::jlimit(20.0f, 1500.0f, timeMs);
-        float samples = (float)(timeMs * sampleRate / 1000.0);
+        timeMs = juce::jlimit(20.0f, 3000.0f, timeMs);
+        float target = (float)(timeMs * sampleRate / 1000.0);
+        if (curSamples < 0.0f) curSamples = target;
         for (int i = 0; i < n; ++i)
         {
-            float rp = (float)pos - samples;
+            // tape-style glide (~80 ms): time knob / tempo changes bend the
+            // repeats instead of jumping the read head (zipper clicks)
+            curSamples += (target - curSamples) * kTime;
+            float rp = (float)pos - curSamples;
             while (rp < 0) rp += len;
-            int i0 = (int)rp; float frac = rp - i0; int i1 = (i0 + 1) % len;
+            int i0 = (int)rp; float frac = rp - (float)i0;
+            if (i0 >= len) { i0 -= len; frac = 0.0f; } // float rounding: never read past the end
+            int i1 = (i0 + 1) % len;
             float dL = bufL[(size_t)i0] * (1 - frac) + bufL[(size_t)i1] * frac;
             float dR = bufR[(size_t)i0] * (1 - frac) + bufR[(size_t)i1] * frac;
             // damping
-            lpL += 0.25f * (dL - lpL); lpR += 0.25f * (dR - lpR);
+            lpL += kDamp * (dL - lpL); lpR += kDamp * (dR - lpR);
             bufL[pos] = L[i] + lpL * fb;
             bufR[pos] = R[i] + lpR * fb;
             L[i] = L[i] * (1 - mix) + dL * mix;
@@ -771,4 +819,5 @@ public:
     void clear() { std::fill(bufL.begin(), bufL.end(), 0.0f); std::fill(bufR.begin(), bufR.end(), 0.0f); }
 private:
     double sampleRate = 44100.0; std::vector<float> bufL, bufR; int len = 1024, pos = 0; float lpL = 0, lpR = 0;
+    float curSamples = -1.0f, kTime = 0.0003f, kDamp = 0.25f;
 };

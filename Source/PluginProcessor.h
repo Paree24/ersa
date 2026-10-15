@@ -36,7 +36,7 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     void loadPreset(int index);
     void loadInit(); // neutral starting point (all defaults), keeps program number
-    void panic();    // immediate all-silence: kills voices, latch, FX tails
+    void panic();    // all-silence: kills voices, latch, FX tails (applied at the next audio block)
     juce::String getPresetName(int i) const;
 
 private:
@@ -91,7 +91,7 @@ private:
     std::vector<int> heldNotes;      // sorted unique
     std::vector<int> arpNotes;       // expanded w/ octaves
     int arpStepIdx = 0;
-    int arpSamplesToNext = 0;
+    double arpSamplesToNext = 0.0;
     int arpCurrentNote = -1;
     bool arpNoteActive = false;
     // steal crossfade state per voice slot
@@ -105,6 +105,12 @@ private:
 
     int currentPreset = 0;
     int lastVoiceMode = -1;
+    // audio-thread scratch + deferred UI requests
+    std::vector<float> mixL, mixR;
+    float lastEqLow = 1.0e9f, lastEqHigh = 1.0e9f;
+    std::atomic<bool> panicRequest { false }, initRequest { false };
+    void doPanic();
+    void doInitReset();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Ersa8Processor)
 };

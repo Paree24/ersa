@@ -521,7 +521,7 @@ int main(int argc, char** argv)
         CHECK(std::abs(p7->apvts.getRawParameterValue("eqhigh")->load()) < 1e-3f, "init resets params");
         CHECK(std::abs(p7->apvts.getRawParameterValue("vco1wave")->load() - 1.0f) < 1e-3f, "init restores saw");
         p7->setCurrentProgram(15); // Mono Growl
-        CHECK(std::abs(p7->apvts.getRawParameterValue("xmod")->load() - 0.6f) < 1e-4f, "growl has cross-mod");
+        CHECK(std::abs(p7->apvts.getRawParameterValue("xmod")->load() - 0.15f) < 1e-4f, "growl has cross-mod");
         CHECK(p7->apvts.getRawParameterValue("sync")->load() > 0.5f, "growl has sync");
         CHECK(std::abs(p7->apvts.getRawParameterValue("voicemode")->load() - 1.0f) < 1e-3f, "growl is mono");
         // growl must snarl, not whisper

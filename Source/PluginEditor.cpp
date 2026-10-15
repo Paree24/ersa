@@ -155,6 +155,13 @@ ErsaContent::ErsaContent(Ersa8Processor& p)
     addAndMakeVisible(browser.get());
     browser->setVisible(false);
     browser->onClose = [&] { browser->setVisible(false); };
+    browser->currentName = [&]
+    {
+        auto t = presetBtn.getButtonText(); // "042 Night Pad" -> "Night Pad"
+        if (t.length() > 4 && t.substring(0, 3).containsOnly("0123456789") && t[3] == ' ')
+            t = t.substring(4);
+        return t == "Init Patch" ? juce::String() : t;
+    };
     browser->onPresetChanged = [&]
     {
         if (browser->lastLoadedIsUser)

@@ -39,22 +39,17 @@ PresetBrowser::PresetBrowser(Ersa8Processor& p, ErsaLookAndFeel& l)
     sb.setColour(juce::ScrollBar::backgroundColourId, juce::Colours::transparentBlack);
 
     closeBtn.onClick = [&] { if (onClose) onClose(); };
-    saveBtn.onClick = [&]
-    {
-        juce::String name = search.getText().trim();
-        if (name.isEmpty())
-        {
-            static int n = 1;
-            name = "My Preset " + juce::String(n++);
-        }
-        if (saveUserPreset(name, proc.apvts))
-        {
-            activeBank = 9;
-            refreshBankButtons();
-            rebuildRows();
-            search.setText("", false);
-        }
-    };
+    nameBox.setLookAndFeel(&lnf);
+    nameBox.setTextToShowWhenEmpty("Preset name...", ErsaColors::textDim.withAlpha(0.7f));
+    nameBox.setColour(juce::TextEditor::backgroundColourId, ErsaColors::comboBg);
+    nameBox.setColour(juce::TextEditor::textColourId, ErsaColors::text);
+    nameBox.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff3a3d43));
+    nameBox.setColour(juce::TextEditor::focusedOutlineColourId, ErsaColors::orange);
+    nameBox.setFont(lnf.uiFont(13.0f));
+    nameBox.onTextChange = [this] { setOverwriteArmed(false); };
+    nameBox.onReturnKey = [this] { clickSave(); };
+    addAndMakeVisible(nameBox);
+    saveBtn.onClick = [this] { clickSave(); };
     delBtn.onClick = [&]
     {
         int r = list.getSelectedRow();
@@ -90,10 +85,52 @@ PresetBrowser::PresetBrowser(Ersa8Processor& p, ErsaLookAndFeel& l)
     rebuildRows();
 }
 
+// SAVE (inline, no pop-up): saves under the name field. An existing user
+// preset needs a second click ("OVERWRITE?"); editing the name disarms it.
+void PresetBrowser::clickSave()
+{
+    if (nameBox.getText().trim().isEmpty()) { nameBox.grabKeyboardFocus(); return; }
+    auto name = sanitisePresetName(nameBox.getText());
+    bool exists = getUserPresetDir().getChildFile(name + ".xml").existsAsFile();
+    if (exists && !overwriteArmed) { setOverwriteArmed(true); return; }
+    setOverwriteArmed(false);
+    saveAs(name);
+}
+
+void PresetBrowser::setOverwriteArmed(bool on)
+{
+    overwriteArmed = on;
+    saveBtn.setButtonText(on ? "OVERWRITE?" : "SAVE");
+    saveBtn.setColour(juce::TextButton::buttonColourId,
+                      on ? ErsaColors::orange.withAlpha(0.35f) : juce::Colour(0xff2c2c33));
+}
+
+void PresetBrowser::saveAs(const juce::String& name)
+{
+    if (!saveUserPreset(name, proc.apvts)) return;
+    currentFactory = -1;             // now a user sound, not a factory slot
+    lastLoadedName = name;
+    lastLoadedIsUser = true;
+    activeBank = 9;
+    search.setText("", false);
+    nameBox.setText(name, false);
+    refreshBankButtons();
+    rebuildRows();
+    for (int i = 0; i < (int)rows.size(); ++i)
+        if (rows[(size_t)i].name == name) { list.selectRow(i, false, true); break; } // reloads the identical state: harmless
+    list.repaint();
+    if (onPresetChanged) onPresetChanged();
+}
+
 void PresetBrowser::visibilityChanged()
 {
     if (isVisible())
     {
+        // prefill the save name with the current sound (not the blank init patch)
+        juce::String cur = currentName ? currentName() : juce::String();
+        nameBox.setText(cur == "Init" ? juce::String() : cur, false);
+        setOverwriteArmed(false);
+        rescanFactoryPresets();
         currentFactory = proc.getCurrentProgram();
         rebuildRows();
         search.grabKeyboardFocus();
@@ -221,9 +258,10 @@ void PresetBrowser::resized()
     for (size_t b = 0; b < bankBtns.size(); ++b)
         bankBtns[b]->setBounds(panel.getX() + 12 + (int)b * (bw + 6), panel.getY() + 72, bw, 22);
     list.setBounds(panel.getX() + 12, panel.getY() + 102, panel.getWidth() - 24, 316);
-    saveBtn.setBounds(panel.getX() + 12, panel.getBottom() - 34, 90, 24);
-    overBtn.setBounds(panel.getX() + 108, panel.getBottom() - 34, 90, 24);
-    delBtn.setBounds(panel.getX() + 204, panel.getBottom() - 34, 70, 24);
+    nameBox.setBounds(panel.getX() + 12, panel.getBottom() - 34, 260, 24);
+    saveBtn.setBounds(panel.getX() + 278, panel.getBottom() - 34, 110, 24);
+    overBtn.setBounds(panel.getRight() - 178, panel.getBottom() - 34, 90, 24);
+    delBtn.setBounds(panel.getRight() - 82, panel.getBottom() - 34, 70, 24);
 }
 
 void PresetBrowser::mouseDown(const juce::MouseEvent& e)
