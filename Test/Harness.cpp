@@ -27,6 +27,55 @@ static float peakAbs(const juce::AudioBuffer<float>& b)
     return p;
 }
 
+// Loudness survey (diagnostic, `ErsaHarness --loudness`): every factory preset
+// plays C3 + G3 for ~1.5 s at velocity 0.8; prints the loudest 400 ms RMS window
+// (dBFS, power-averaged over 4 renders: analog slop and S&H vary per render).
+// Used to re-level the bank after sound changes.
+static int loudnessSurvey()
+{
+    std::unique_ptr<Ersa8Processor> probe(new Ersa8Processor());
+    const int n = probe->getNumPrograms();
+    const int win = 17640; // 400 ms @ 44.1k
+    printf("idx\tmom_db\tpeak_db\tname\n");
+    for (int pi = 0; pi < n; ++pi)
+    {
+        double powSum = 0.0; float peak = 0.0f;
+        for (int run = 0; run < 4; ++run)
+        {
+            std::unique_ptr<Ersa8Processor> pq(new Ersa8Processor());
+            pq->setRateAndBufferSizeDetails(44100, 512);
+            pq->prepareToPlay(44100.0, 512);
+            pq->setCurrentProgram(pi);
+            juce::AudioBuffer<float> b(2, 512); juce::MidiBuffer m;
+            std::vector<double> ms; ms.reserve(130 * 512);
+            for (int k = 0; k < 130; ++k)
+            {
+                m.clear();
+                if (k == 0) { m.addEvent(juce::MidiMessage::noteOn(1, 48, 0.8f), 0); m.addEvent(juce::MidiMessage::noteOn(1, 55, 0.8f), 0); }
+                if (k == 129) { m.addEvent(juce::MidiMessage::noteOff(1, 48), 0); m.addEvent(juce::MidiMessage::noteOff(1, 55), 0); }
+                b.clear(); pq->processBlock(b, m);
+                for (int i = 0; i < 512; ++i)
+                {
+                    float l = b.getSample(0, i), r = b.getSample(1, i);
+                    peak = juce::jmax(peak, std::abs(l), std::abs(r));
+                    ms.push_back(0.5 * ((double) l * l + (double) r * r));
+                }
+            }
+            double acc = 0.0, best = 0.0;
+            for (size_t i = 0; i < ms.size(); ++i)
+            {
+                acc += ms[i];
+                if (i >= (size_t) win) acc -= ms[i - (size_t) win];
+                if (i + 1 >= (size_t) win) best = juce::jmax(best, acc / win);
+            }
+            powSum += best;
+        }
+        printf("%d\t%.2f\t%.2f\t%s\n", pi, 10.0 * std::log10(powSum / 4 + 1e-12),
+               20.0 * std::log10(peak + 1e-9), probe->getProgramName(pi).toRawUTF8());
+    }
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     juce::ignoreUnused(argc, argv);
@@ -47,6 +96,7 @@ int main(int argc, char** argv)
         setFactoryDirsForTest(repoFactory, tmpOver);
         printf("factory dir: %s\n", repoFactory.getFullPathName().toRawUTF8());
     }
+    if (argc > 1 && juce::String(argv[1]) == "--loudness") return loudnessSurvey();
     printf("--- fresh processor, fx off from boot ---\n");
     {
         std::unique_ptr<Ersa8Processor> p2(new Ersa8Processor());
@@ -109,6 +159,216 @@ int main(int argc, char** argv)
     }
     printf("ok: all %d presets apply + named\n", proc->getNumPrograms());
 
+    printf("--- envelope times match the knobs ---\n");
+    {
+        EnvADSR e; e.setSampleRate(48000.0);
+        e.setParams(0.1f, 0.3f, 1.0f, 0.5f);
+        e.noteOn();
+        int n = 0; float lv = 0.0f;
+        while (lv < 1.0f && n < 100000) { lv = e.next(); ++n; }
+        printf("attack 0.1 s -> %.4f s\n", n / 48000.0);
+        CHECK(std::abs(n / 48000.0 - 0.1) < 0.003, "attack reaches the peak in the knob time (overshoot knee)");
+        for (int i = 0; i < 2000; ++i) e.next();
+        e.noteOff();
+        n = 0;
+        while (e.isActive() && n < 1000000) { e.next(); ++n; }
+        printf("release 0.5 s -> %.4f s\n", n / 48000.0);
+        CHECK(std::abs(n / 48000.0 - 0.5) < 0.01, "release reaches silence in the knob time");
+    }
+
+    printf("--- 4-pole OTA ladder VCF ---\n");
+    {
+        const double fs = 44100.0;
+        auto ring = [&](float reso, int slope24) {
+            VoiceFilter f; f.reset();
+            float y = f.process(1.0f, 1000.0f, reso, fs, slope24);
+            std::vector<float> out;
+            for (int i = 0; i < 44100; ++i) { y = f.process(0.0f, 1000.0f, reso, fs, slope24); out.push_back(y); }
+            double s = 0; int zc = 0;
+            for (int i = 22050; i < 44100; ++i) { s += (double) out[(size_t) i] * out[(size_t) i]; if (i > 22050 && (out[(size_t) i - 1] < 0) != (out[(size_t) i] < 0)) ++zc; }
+            return std::make_pair(std::sqrt(s / 22050), zc / 2.0 / 0.5);
+        };
+        auto top = ring(0.95f, 1), mid = ring(0.5f, 1), top12 = ring(0.95f, 0);
+        printf("self-osc rms %.3f at %.0f Hz, res 0.5 rms %.6f, 12 dB tap rms %.3f\n", top.first, top.second, mid.first, top12.first);
+        CHECK(top.first > 0.1 && std::abs(top.second - 1000.0) < 60.0, "max resonance self-oscillates at the cutoff");
+        CHECK(mid.first < 1.0e-4, "below the top the ring dies away");
+        CHECK(top12.first > 0.02, "12 dB tap sings with the same core");
+        // 24 dB vs 12 dB: the slope above the cutoff
+        auto hf = [&](int slope24) {
+            // second difference weights the output by f^2: energy above the cutoff
+            VoiceFilter f; f.reset(); juce::Random r(7); double s = 0; float y1 = 0, y2 = 0;
+            for (int i = 0; i < 44100; ++i)
+            {
+                float y = f.process(r.nextFloat() * 2.0f - 1.0f, 500.0f, 0.0f, fs, slope24);
+                const float d2 = y - 2.0f * y1 + y2; y2 = y1; y1 = y;
+                if (i > 1000) s += (double) d2 * d2;
+            }
+            return s;
+        };
+        CHECK(hf(0) > 3.0 * hf(1), "24 dB is steeper than the 12 dB tap");
+    }
+
+    printf("--- performance features ---\n");
+    {
+        juce::MessageManager::getInstance(); // undo records message-thread gestures
+        auto make = [] {
+            std::unique_ptr<Ersa8Processor> q(new Ersa8Processor());
+            q->setRateAndBufferSizeDetails(44100, 512);
+            q->prepareToPlay(44100.0, 512);
+            q->loadInit();
+            juce::AudioBuffer<float> b(2, 512); juce::MidiBuffer m; q->processBlock(b, m); // apply the init request
+            for (auto id : { "chon", "phon", "dlon", "rvon", "ston" })
+                if (auto* prm = q->apvts.getParameter(id)) prm->setValueNotifyingHost(0.0f);
+            return q;
+        };
+        auto set = [](Ersa8Processor& q, const char* id, float plain) {
+            auto* prm = q.apvts.getParameter(id); prm->setValueNotifyingHost(prm->convertTo0to1(plain));
+        };
+        auto render = [](Ersa8Processor& q, int blocks, std::initializer_list<int> notes, float vel = 0.8f) {
+            std::vector<float> mono;
+            juce::AudioBuffer<float> b(2, 512);
+            for (int k = 0; k < blocks; ++k)
+            {
+                juce::MidiBuffer m;
+                if (k == 0) for (int n : notes) m.addEvent(juce::MidiMessage::noteOn(1, n, vel), 0);
+                b.clear(); q.processBlock(b, m);
+                for (int i = 0; i < 512; ++i) mono.push_back(0.5f * (b.getSample(0, i) + b.getSample(1, i)));
+            }
+            return mono;
+        };
+        // VCO-2 LOW: a sub-audio rate that ignores the key
+        {
+            double hz[2];
+            int k = 0;
+            for (int note : { 48, 72 })
+            {
+                auto q = make();
+                set(*q, P::VCO1_LEVEL, 0.0f); set(*q, P::VCO2_LEVEL, 1.0f); set(*q, P::VCO2_WAVE, 3);
+                set(*q, P::VCO2_RANGE, 5); set(*q, P::VCO2_TUNE, 0.0f); set(*q, P::SUBLEVEL, 0.0f);
+                set(*q, P::CUTOFF, 18000.0f); set(*q, P::HPF, 0); set(*q, P::AS, 1.0f);
+                auto o = render(*q, 260, { note });
+                int zc = 0;
+                for (size_t i = 22050; i < o.size(); ++i) if ((o[i - 1] < 0) != (o[i] < 0)) ++zc;
+                hz[k++] = zc / 2.0 / ((o.size() - 22050) / 44100.0);
+            }
+            printf("VCO-2 LOW: %.2f Hz on C3, %.2f Hz on C5\n", hz[0], hz[1]);
+            CHECK(std::abs(hz[0] - 1.0) < 0.35 && std::abs(hz[1] - 1.0) < 0.35, "VCO-2 LOW runs at ~1 Hz on any key");
+        }
+        // band-limited hard sync: little energy off the master's harmonics
+        {
+            auto q = make();
+            set(*q, P::VCO1_LEVEL, 0.0f); set(*q, P::VCO2_LEVEL, 1.0f); set(*q, P::VCO2_WAVE, 0);
+            set(*q, P::SYNC, 1.0f); set(*q, P::VCO2_RANGE, 3); set(*q, P::VCO2_TUNE, 37.0f);
+            set(*q, P::CUTOFF, 18000.0f); set(*q, P::SUBLEVEL, 0.0f); set(*q, P::AS, 1.0f); set(*q, P::CH_ON, 0.0f);
+            auto o = render(*q, 40, { 91 }); // G6: harmonics run past Nyquist
+            const int N = 8192, off = 8192;
+            // Goertzel power at every bin, split into near-harmonic and the rest
+            std::vector<double> pw((size_t) N / 2, 0.0);
+            for (int bin = 1; bin < N / 2; ++bin)
+            {
+                const double w = 2.0 * juce::MathConstants<double>::pi * bin / N;
+                double s1 = 0, s2 = 0;
+                for (int i = 0; i < N; ++i)
+                {
+                    const double win = 0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * i / (N - 1));
+                    const double s0 = o[(size_t) (off + i)] * win + 2.0 * std::cos(w) * s1 - s2; s2 = s1; s1 = s0;
+                }
+                pw[(size_t) bin] = s1 * s1 + s2 * s2 - 2.0 * std::cos(w) * s1 * s2;
+            }
+            // the voice's real fundamental (analog tolerance detunes it a little):
+            // strongest bin near the nominal pitch, refined by a parabola
+            const double fNom = 440.0 * std::pow(2.0, (91 - 69) / 12.0);
+            int pk = (int) std::round(fNom * N / 44100.0);
+            for (int bin = (int) (fNom * 0.97 * N / 44100.0); bin <= (int) (fNom * 1.03 * N / 44100.0); ++bin)
+                if (pw[(size_t) bin] > pw[(size_t) pk]) pk = bin;
+            const double a0 = pw[(size_t) pk - 1], a1 = pw[(size_t) pk], a2 = pw[(size_t) pk + 1];
+            const double f0 = (pk + 0.5 * (a0 - a2) / (a0 - 2.0 * a1 + a2)) * 44100.0 / N;
+            double harm = 0, total = 0;
+            for (int bin = 1; bin < N / 2; ++bin)
+            {
+                const double h = bin * 44100.0 / N / f0;
+                total += pw[(size_t) bin];
+                if (std::abs(h - std::round(h)) * f0 < 3.0 * 44100.0 / N) harm += pw[(size_t) bin];
+            }
+            const double inharm = 1.0 - harm / juce::jmax(1e-12, total);
+            printf("sync: %.2f%% of the power off the harmonics\n", inharm * 100.0);
+            CHECK(inharm < 0.02, "hard sync is band-limited (aliasing under 2%)");
+        }
+        // poly arp: gated steps at the played velocity
+        {
+            auto q = make();
+            set(*q, P::ARP_ON, 1.0f); set(*q, P::ARP_DIV, 10); set(*q, P::ARP_GATE, 0.4f); set(*q, P::AR, 0.01f);
+            set(*q, P::VELSENS, 1.0f);
+            auto loud = render(*q, 120, { 60, 64 }, 1.0f);
+            auto q2 = make();
+            set(*q2, P::ARP_ON, 1.0f); set(*q2, P::ARP_DIV, 10); set(*q2, P::ARP_GATE, 0.4f); set(*q2, P::AR, 0.01f);
+            set(*q2, P::VELSENS, 1.0f);
+            auto soft = render(*q2, 120, { 60, 64 }, 0.25f);
+            auto rms = [](const std::vector<float>& v) { double s = 0; for (float x : v) s += (double) x * x; return std::sqrt(s / v.size()); };
+            int gaps = 0; bool quiet = false;
+            for (size_t i = 0; i < loud.size(); i += 64)
+            {
+                float pk = 0; for (size_t j = i; j < juce::jmin(loud.size(), i + 64); ++j) pk = juce::jmax(pk, std::abs(loud[j]));
+                if (pk < 1e-3f && !quiet) { ++gaps; quiet = true; } else if (pk >= 1e-3f) quiet = false;
+            }
+            printf("arp: %d gaps, soft/loud rms %.3f\n", gaps, rms(soft) / rms(loud));
+            CHECK(gaps >= 8, "arp gate shortens every step");
+            CHECK(rms(soft) < 0.7 * rms(loud), "arp plays the keys' velocity");
+        }
+        // legacy state: v1 envelope / LFO / glide values keep their sound
+        {
+            auto q = make();
+            juce::ValueTree st = q->apvts.copyState();
+            st.removeProperty("ver", nullptr);
+            auto setChild = [&](const char* id, double v) {
+                for (int i = 0; i < st.getNumChildren(); ++i)
+                    if (st.getChild(i).getProperty("id").toString() == id) st.getChild(i).setProperty("value", v, nullptr);
+            };
+            setChild(P::FA, 0.1); setChild(P::AR, 0.4); setChild(P::LFO_VCO1, 1.0); setChild(P::PORTA, 0.5);
+            juce::MemoryBlock mb;
+            if (auto xml = st.createXml()) juce::AudioProcessor::copyXmlToBinary(*xml, mb);
+            q->setStateInformation(mb.getData(), (int) mb.getSize());
+            auto v = [&](const char* id) { return q->apvts.getRawParameterValue(id)->load(); };
+            printf("migrated: FA %.3f AR %.3f LFO>VCO1 %.3f PORTA %.3f\n", v(P::FA), v(P::AR), v(P::LFO_VCO1), v(P::PORTA));
+            CHECK(std::abs(v(P::FA) - 0.115f) < 0.002f && std::abs(v(P::AR) - 0.988f) < 0.005f
+                  && std::abs(v(P::LFO_VCO1) - 0.2887f) < 0.005f && std::abs(v(P::PORTA) - 0.2828f) < 0.005f,
+                  "old projects are rescaled to sound the same");
+        }
+        // undo + randomize with locks
+        {
+            auto q = make();
+            auto* cut = q->apvts.getParameter(P::CUTOFF);
+            const float before = cut->getValue();
+            cut->beginChangeGesture(); cut->setValueNotifyingHost(0.3f); cut->endChangeGesture();
+            q->undoEdit();
+            CHECK(std::abs(cut->getValue() - before) < 1e-5f, "undo a knob gesture");
+            q->redoEdit();
+            q->setGroupLocked(Ersa8Processor::RG_VCF, true);
+            const float vol = q->apvts.getRawParameterValue(P::VOLUME)->load();
+            bool kept = true, moved = false;
+            const float fa0 = q->apvts.getRawParameterValue(P::FA)->load();
+            for (int k = 0; k < 5; ++k)
+            {
+                q->randomize();
+                kept = kept && std::abs(cut->getValue() - 0.3f) < 1e-5f && q->apvts.getRawParameterValue(P::VOLUME)->load() == vol;
+                moved = moved || q->apvts.getRawParameterValue(P::FA)->load() != fa0;
+            }
+            CHECK(kept && moved && q->isGroupLocked(Ersa8Processor::RG_ARP), "randomize keeps locked sections + volume, arp locked by default");
+            auto o = render(*q, 40, { 48, 55 });
+            bool fin = true; for (float x : o) fin = fin && std::isfinite(x);
+            CHECK(fin, "random patch renders finite");
+            const char* pitchIds[] = { P::VCO1_RANGE, P::VCO2_RANGE, P::VCO2_TUNE, P::ENVVCO, P::LFO_VCO1, P::LFO_VCO2, P::XMOD, P::SYNC };
+            float pitchBefore[8]; for (int k = 0; k < 8; ++k) pitchBefore[k] = q->apvts.getRawParameterValue(pitchIds[k])->load();
+            bool same = true;
+            for (int n = 0; n < 20; ++n)
+            {
+                if (n & 1) q->mutate(); else q->randomize();
+                for (int k = 0; k < 8; ++k) same = same && q->apvts.getRawParameterValue(pitchIds[k])->load() == pitchBefore[k];
+            }
+            CHECK(same, "randomize / mutate never touch pitch");
+        }
+    }
+
     printf("--- create/delete editor ---\n");
     {
         std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor());
@@ -118,7 +378,7 @@ int main(int argc, char** argv)
         for (int ci = 0; ci < juce::jmin(3, ed->getNumChildComponents()); ++ci)
             if (auto* c = ed->getChildComponent(ci))
                 printf("child %d vis=%d %s\n", ci, (int)c->isVisible(), c->getBounds().toString().toRawUTF8());
-        juce::Image img(juce::Image::RGB, 1240, 586, true);
+        juce::Image img(juce::Image::RGB, ErsaContent::baseW, ErsaContent::baseH, true);
         {
             juce::Graphics g(img);
             ed->paintEntireComponent(g, false); // full tree incl. children
@@ -128,9 +388,9 @@ int main(int argc, char** argv)
             // render the preset browser open as well
             ErsaLookAndFeel blnf;
             PresetBrowser pb(*proc, blnf);
-            pb.setBounds(0, 0, 1240, 586);
+            pb.setBounds(0, 0, ErsaContent::baseW, ErsaContent::baseH);
             pb.setVisible(true);
-            juce::Image bimg(juce::Image::RGB, 1240, 586, true);
+            juce::Image bimg(juce::Image::RGB, ErsaContent::baseW, ErsaContent::baseH, true);
             {
                 juce::Graphics bg2(bimg);
                 pb.paintEntireComponent(bg2, false);

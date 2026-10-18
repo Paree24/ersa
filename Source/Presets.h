@@ -15,6 +15,12 @@ struct FactoryPreset
     int bank = 0;          // effective bank 1..8 (tag or index fallback)
 };
 
+// State format version, stored as a "ver" property on the root tree. Trees
+// without it (or older) were saved by earlier builds: migrateLegacyState()
+// rewrites their values so they keep sounding the way they were made.
+static constexpr int kErsaStateVersion = 2;
+void migrateLegacyState(juce::ValueTree& state);
+
 const std::vector<FactoryPreset>& getFactoryPresets(); // sorted by index
 void rescanFactoryPresets();
 void setFactoryDirsForTest(const juce::File& bundleDir, const juce::File& overrideDir);

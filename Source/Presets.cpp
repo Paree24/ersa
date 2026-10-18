@@ -102,12 +102,50 @@ const std::vector<FactoryPreset>& getFactoryPresets()
     return factory;
 }
 
+// ---------------- legacy state migration ----------------
+static juce::ValueTree findParam(juce::ValueTree& state, const char* id)
+{
+    for (int i = 0; i < state.getNumChildren(); ++i)
+    {
+        auto ch = state.getChild(i);
+        if (ch.hasType("PARAM") && ch.getProperty("id").toString() == id) return ch;
+    }
+    return {};
+}
+
+void migrateLegacyState(juce::ValueTree& state)
+{
+    int ver = (int)state.getProperty("ver", 1);
+    if (ver < 2)
+    {
+        auto edit = [&](const char* id, auto fn)
+        {
+            auto ch = findParam(state, id);
+            if (ch.isValid()) ch.setProperty("value", (double)fn((float)(double)ch.getProperty("value", 0.0)), nullptr);
+        };
+        // v1 played VCO-2 a hidden +4 cents above its TUNE knob
+        edit(P::VCO2_TUNE, [](float v) { return juce::jlimit(-100.0f, 100.0f, v + 4.0f); });
+        // v1 envelopes ran long: release reached silence in 2.47x the knob time
+        // (same exponential curve, so 2.47x keeps it exact). The v1 attack was an
+        // RC curve at 95% by the knob time; the new near-linear attack gets there
+        // at 0.9x its time, so 1.15x keeps the feel. Knobs now mean what they say.
+        for (auto id : { P::FA, P::AA }) edit(id, [](float v) { return juce::jlimit(0.001f, 8.0f, v * 1.15f); });
+        for (auto id : { P::FR, P::AR }) edit(id, [](float v) { return juce::jlimit(0.01f, 20.0f, v * 2.47f); });
+        // LFO -> VCO: v1 was linear up to +/-1 st, now squared up to +/-12 st
+        for (auto id : { P::LFO_VCO1, P::LFO_VCO2 }) edit(id, [](float v) { return std::sqrt(juce::jmax(0.0f, v) / 12.0f); });
+        // portamento: v1 time constant 0.4 x knob, now 2.5 x knob^2
+        edit(P::PORTA, [](float v) { return std::sqrt(juce::jmax(0.0f, v) * 0.16f); });
+    }
+    state.setProperty("ver", kErsaStateVersion, nullptr);
+}
+
 static bool applyStateFile(const juce::File& file, juce::AudioProcessorValueTreeState& apvts)
 {
     auto xml = juce::parseXML(file);
     if (xml == nullptr) return false;
     auto vt = juce::ValueTree::fromXml(*xml);
     if (!vt.isValid()) return false;
+    migrateLegacyState(vt);
     // reset to defaults, then apply every stored param (unknown ids ignored)
     for (auto* param : apvts.processor.getParameters())
         if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(param))

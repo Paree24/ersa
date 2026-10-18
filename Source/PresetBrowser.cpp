@@ -208,6 +208,7 @@ void PresetBrowser::selectedRowsChanged(int lastRow)
     auto& row = rows[(size_t)r];
     if (row.isUser)
     {
+        auto step = proc.undoStep(); // one undo step for the whole preset
         if (loadUserPreset(row.file, proc.apvts))
         {
             currentFactory = -1;

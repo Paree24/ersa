@@ -97,3 +97,10 @@ target_link_libraries(ErsaHarness PRIVATE
   juce::juce_dsp
   ErsaAssets
 )
+
+# HostCheck: loads the built ERSA.vst3 through JUCE's VST3 hosting (dev only)
+#   ./build/HostCheck build/ERSA_artefacts/Release/VST3/ERSA.vst3
+add_executable(HostCheck Test/HostCheck.cpp)
+target_link_libraries(HostCheck PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_recommended_config_flags)
+target_compile_definitions(HostCheck PRIVATE JUCE_PLUGINHOST_VST3=1 JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=1)
+add_dependencies(HostCheck ERSA)

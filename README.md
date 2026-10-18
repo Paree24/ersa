@@ -8,9 +8,16 @@ ERSA is an 8-voice dual-oscillator analog-style polysynth with a vintage
 oscillator → mixer → filter → amp signal flow, an extended effects section
 (chorus, phaser, tempo-syncable delay, modulated algorithmic reverb,
 tape/tube saturator, EQ), an arpeggiator with host-synced divisions, per-voice
-analog character (tolerances, drift, free-running oscillators), resonant
-low-pass filter (12/24 dB), 256 factory presets in two banks (editable data
-files, never compiled in), user preset save/load, and a full preset browser with search.
+analog character (tolerances, drift, free-running oscillators), a classic OTA-ladder-style
+four-pole VCF that self-oscillates at the top of RESONANCE (24 dB, or a 12 dB
+tap on the same core), band-limited hard sync, the JP-8 extras (ENV-1 -> VCO
+pitch, PWM from LFO or ENV-1, VCO-2 LOW sub-audio range, LFO delay, MOD lever
+on the mod wheel, hold pedal), envelopes whose times match the knobs, a
+rotating poly arp with gate / swing / played velocity / hold, poly portamento,
+undo / redo, randomize / mutate with section locks, an output meter + scope,
+256 factory presets across eight category banks
+(Bass, Lead, Pad, Orch, Keys, Arp, FX, Classics; editable data files, never
+compiled in), user preset save/load, and a full preset browser with search.
 
 ## License
 

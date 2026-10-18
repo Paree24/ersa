@@ -69,6 +69,9 @@ jobs:
       - name: Self-test (Linux, under Xvfb)
         if: runner.os == 'Linux'
         run: xvfb-run -a ./build/ErsaHarness_artefacts/Release/ErsaHarness
+      - name: Host check (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./build/HostCheck build/ERSA_artefacts/Release/VST3/ERSA.vst3
 
       - name: Self-test (macOS)
         if: runner.os == 'macOS'

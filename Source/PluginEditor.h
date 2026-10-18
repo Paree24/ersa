@@ -6,8 +6,20 @@
 
 class Ersa8Processor;
 
-// Fixed-layout content (1240x586), hosted inside a scaling resizable editor.
-class ErsaContent : public juce::Component
+// Output meter (L/R peak) + oscilloscope of the master output.
+class OutputScope : public juce::Component, private juce::Timer
+{
+public:
+    explicit OutputScope(Ersa8Processor& p);
+    void paint(juce::Graphics&) override;
+private:
+    void timerCallback() override { repaint(); }
+    Ersa8Processor& proc;
+    float buf[512] {};
+};
+
+// Fixed-layout content (1240x714), hosted inside a scaling resizable editor.
+class ErsaContent : public juce::Component, private juce::Timer
 {
 public:
     explicit ErsaContent(Ersa8Processor&);
@@ -15,7 +27,7 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int baseW = 1240, baseH = 586;
+    static constexpr int baseW = 1240, baseH = 714;
 
 private:
     Ersa8Processor& proc;
@@ -23,6 +35,9 @@ private:
 
     juce::TextButton presetBtn { "Init Patch" };
     juce::TextButton prevBtn { "<" }, nextBtn { ">" }, initBtn { "INIT" }, panicBtn { "PANIC" };
+    juce::TextButton undoBtn { "UNDO" }, redoBtn { "REDO" }, randBtn { "RAND" }, mutateBtn { "MUTATE" }, locksBtn { "LOCKS" };
+    std::unique_ptr<OutputScope> scope;
+    void timerCallback() override; // undo / redo enable state
     std::unique_ptr<PresetBrowser> browser;
 
     std::vector<std::unique_ptr<juce::Slider>> knobs;
@@ -56,6 +71,9 @@ public:
     void resized() override;
 
 private:
+    bool keyPressed(const juce::KeyPress&) override; // Ctrl/Cmd+Z undo, +Shift redo
+    juce::TooltipWindow tooltips { this, 700 }; // every setTooltip() needs one of these to show
+    Ersa8Processor& proc;
     ErsaContent content;
     juce::ResizableCornerComponent corner;
 

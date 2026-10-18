@@ -19,12 +19,16 @@ struct SynthParams
     int tapN = 1;                       // max(u1,u2)
     bool sync = false; float xmod = 0.0f;
     int hpf = 0;
-    float cutoff = 4000.0f, reso = 0.2f, fenv = 0.7f, flfo = 0.0f, keytrk = 0.5f;
+    float cutoff = 4000.0f, reso = 0.2f, fenv = 0.7f, keytrk = 0.5f;
     int slope = 1;
     float fa = 0.01f, fd = 0.2f, fs = 0.6f, fr = 0.3f;
     float aa = 0.01f, ad = 0.1f, as = 1.0f, ar = 0.2f;
     float lfoRate = 4.0f; int lfoWave = 0; float lfoDelay = 0.0f;
     float lfoVco1 = 0.0f, lfoVco2 = 0.0f, lfoVcf = 0.0f;
+    float subLevel = 0.5f;               // sine sub under VCO-1 (0.5 = the classic level)
+    int pwmSrc = 0;                      // PWM from 0 LFO, 1 ENV-1
+    float envVco = 0.0f; int envVcoDst = 1; // ENV-1 -> pitch (bipolar), 0 VCO-1 1 VCO-2 2 both
+    float leverVco = 0.0f, leverVcf = 0.0f; // MOD lever (CC1) x its depth knobs, smoothed
     int vcaMode = 1;
     float volume = 0.8f, tune = 0.0f;
     int bendRange = 2; float porta = 0.0f; int voiceMode = 0; float uidet = 0.15f, velsens = 0.5f;
@@ -47,12 +51,21 @@ public:
     {
         sampleRate = sr;
         kSus = 1.0f - std::exp(-1.0f / (0.010f * (float)sr)); // ~10 ms sustain glide
+        att = dec = rel = -1.0f; // rate-dependent coefficients: rebuild on the next setParams
     }
+    // Times are what the knobs say: attack = time to full level, release = time
+    // to silence. The attack charges toward kAim (above the peak) and is cut off
+    // at 1.0, like the JP-8 EG capacitor: a near-linear rise with an overshoot
+    // knee. (v1 ran 1.77x long on attack and 2.47x on release; old presets and
+    // projects are rescaled by migrateLegacyState.)
     void setParams(float a, float d, float s, float r)
     {
-        // seconds, with sensible minimums
-        att = std::max(a, 0.001f); dec = std::max(d, 0.002f);
-        sus = s; rel = std::max(r, 0.005f);
+        a = std::max(a, 0.001f); d = std::max(d, 0.002f); r = std::max(r, 0.005f);
+        const float sr = (float)sampleRate;
+        if (a != att) { att = a; ka = 1.0f - std::exp(-std::log(kAim / (kAim - 1.0f)) / (att * sr)); }
+        if (d != dec) { dec = d; kd = 1.0f - std::exp(-3.0f / (dec * sr)); }
+        if (r != rel) { rel = r; kr = std::exp(std::log(kFloor) / (rel * sr)); }
+        sus = s;
     }
     void noteOn()
     {
@@ -70,22 +83,19 @@ public:
         {
             case State::Idle: return 0.0f;
             case State::Attack: {
-                float ka = 1.0f - std::exp(-3.0f / (att * (float)sampleRate));
-                level += (1.0f - level) * ka;
-                if ((1.0f - level) < 0.005f) state = State::Decay;
+                level += (kAim - level) * ka;
+                if (level >= 1.0f) { level = 1.0f; state = State::Decay; }
                 return level;
             }
             case State::Decay: {
-                float kd = 1.0f - std::exp(-3.0f / (dec * (float)sampleRate));
                 level += (sus - level) * kd;
                 if (std::fabs(level - sus) < 0.002f) { level = sus; state = State::Sustain; }
                 return level;
             }
             case State::Sustain: level += (sus - level) * kSus; return level; // live knob: glide, never step
             case State::Release: {
-                float kr = std::exp(-3.0f / (rel * (float)sampleRate));
                 level *= kr;
-                if (level < 0.0006f) { level = 0.0f; state = State::Idle; return 0.0f; }
+                if (level < kFloor) { level = 0.0f; state = State::Idle; return 0.0f; }
                 return level;
             }
         }
@@ -95,7 +105,9 @@ private:
     enum class State { Idle, Attack, Decay, Sustain, Release };
     State state = State::Idle;
     double sampleRate = 44100.0;
-    float att = 0.01f, dec = 0.2f, sus = 0.7f, rel = 0.3f, level = 0.0f;
+    static constexpr float kAim = 1.35f, kFloor = 0.0006f; // attack target, release end (-64 dB)
+    float att = -1.0f, dec = -1.0f, sus = 0.7f, rel = -1.0f, level = 0.0f;
+    float ka = 0.01f, kd = 0.01f, kr = 0.999f;
     float kSus = 0.002f;
 };
 
@@ -165,45 +177,70 @@ inline float oscSampleVCO2(int wave, double phase, float pw, double dt, juce::Ra
     }
 }
 
-inline double rangeMultiplier(int r) // octave switch: -2 -1 0 +1 +2
+// naive (un-BLEPed) VCO-2 value: the two sides of a hard-sync jump
+inline float naiveVCO2(int wave, double phase, float pw)
+{
+    switch (wave)
+    {
+        case 0: return roundSaw((float)(2.0 * phase - 1.0));
+        case 1: return (phase < pw ? 1.0f : -1.0f) * 0.75f;
+        case 2: return (phase < 0.5 ? 1.0f : -1.0f) * 0.65f;
+        case 3: return (float)std::sin(2.0 * juce::MathConstants<double>::pi * phase);
+        default: return 0.0f;
+    }
+}
+
+inline double rangeMultiplier(int r) // octave switch: -2 -1 0 +1 +2 (5 = VCO-2 LOW, handled by the voice)
 {
     switch (r) { case 0: return 0.25; case 1: return 0.5; case 2: return 1.0; case 3: return 2.0; default: return 4.0; }
 }
+static constexpr int kRangeLow = 5;
 inline float midiToFreq(float midi) { return 440.0f * std::pow(2.0f, (midi - 69.0f) / 12.0f); }
 
-// ---------------- Voice filter: cascaded TPT-SVF lowpass, 12/24 dB ----------------
-// Per-sample Zavalishin SVF (stable, cheap) — two cascaded 12 dB stages for 24 dB mode.
+// ---------------- Voice filter: 4-pole OTA ladder VCF ----------------
+// One four-pole OTA lowpass core (four TPT one-poles) with the resonance fed
+// back around all four poles, like a classic 4-pole OTA ladder: the loop gain k
+// reaches 4 near the top of the RESONANCE knob, where the filter
+// self-oscillates at the cutoff. 24 dB is the fourth pole; 12 dB is a tap on
+// the second pole of the same core (the feedback still comes from pole four).
+// The loop is solved zero-delay (linear prediction of the pole-4 output), then
+// the input OTA saturates, which bounds the self-oscillation and compresses
+// loud resonant swings. Resonance thins the bass, partly made up at the input.
 struct VoiceFilter
 {
-    void reset() { ic1a = ic2a = ic1b = ic2b = 0.0f; }
+    void reset() { st[0] = st[1] = st[2] = st[3] = 0.0f; }
+    static inline float resoToK(float reso01) // knob 0..0.95 -> loop gain 0..~4.4
+    {
+        float r = juce::jlimit(0.0f, 1.0f, reso01 / 0.95f);
+        return 4.4f * std::pow(r, 1.6f);
+    }
     inline float process(float x, float cutoffHz, float reso01, double sr, int slope24)
     {
         float fc = juce::jlimit(30.0f, 19000.0f, cutoffHz);
-        float g = std::tan(juce::MathConstants<float>::pi * fc / (float)sr);
-        g = juce::jmin(g, 8.0f);
-        // gradual resonance: gentle at low knob, singing (not screaming) at max
-        float r = juce::jlimit(0.0f, 0.98f, reso01);
-        float Q = 0.5f + r * r * 5.0f; // 0.5 .. ~5.3
-        float k = 1.0f / Q;
-        float a1 = 1.0f / (1.0f + g * (g + k));
-        float a2 = g * a1;
-        float a3 = g * a2;
-        // stage A
-        float v3 = x - ic2a;
-        float v1 = a1 * ic1a + a2 * v3;
-        float v2 = ic2a + a2 * ic1a + a3 * v3;
-        ic1a = 2.0f * v1 - ic1a;
-        ic2a = 2.0f * v2 - ic2a;
-        if (!slope24) return v2;
-        // stage B (share coefficients)
-        float w3 = v2 - ic2b;
-        float w1 = a1 * ic1b + a2 * w3;
-        float w2 = ic2b + a2 * ic1b + a3 * w3;
-        ic1b = 2.0f * w1 - ic1b;
-        ic2b = 2.0f * w2 - ic2b;
-        return w2;
+        float g = juce::jmin(std::tan(juce::MathConstants<float>::pi * fc / (float)sr), 8.0f);
+        const float G = g / (1.0f + g), B = 1.0f / (1.0f + g);
+        const float k = resoToK(reso01);
+        // zero-delay feedback: pole-4 output predicted from the stage states
+        const float G2 = G * G, G3 = G2 * G, G4 = G2 * G2;
+        const float S = G3 * B * st[0] + G2 * B * st[1] + G * B * st[2] + B * st[3];
+        const float y4 = (G4 * x * (1.0f + 0.3f * k) + S) / (1.0f + k * G4);
+        // input OTA: saturating sum of signal and resonance feedback (+ a
+        // whisper of circuit noise so the loop can start from silence)
+        noise = noise * 1664525u + 1013904223u;
+        float u = x * (1.0f + 0.3f * k) - k * y4 + ((float)(noise >> 9) * (1.0f / 8388608.0f) - 1.0f) * 1.0e-6f;
+        u = 1.4f * std::tanh(u / 1.4f);
+        float y = u, tap2 = 0.0f;
+        for (int i = 0; i < 4; ++i)
+        {
+            const float v = (y - st[i]) * G;
+            y = v + st[i];
+            st[i] = y + v;
+            if (i == 1) tap2 = y;
+        }
+        return slope24 ? y : tap2;
     }
-    float ic1a = 0.0f, ic2a = 0.0f, ic1b = 0.0f, ic2b = 0.0f;
+    float st[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    juce::uint32 noise = 12345u;
 };
 
 // ---------------- Global LFO ----------------
@@ -227,12 +264,15 @@ public:
             case 4: raw = snhValue; break;                                                // S&H
             default: raw = 0.0f;
         }
+        // JP-8 LFO DELAY: the modulation waits for the delay time, then fades
+        // in over half of it (at least 20 ms)
         float fade = 1.0f;
         if (delaySec > 0.001f)
         {
             delayCount++;
-            float total = delaySec * (float)sampleRate;
-            fade = juce::jlimit(0.0f, 1.0f, delayCount / total);
+            const double wait = delaySec * sampleRate;
+            const double ramp = juce::jmax(0.02, 0.5 * delaySec) * sampleRate;
+            fade = (float)juce::jlimit(0.0, 1.0, ((double)delayCount - wait) / ramp);
         }
         return raw * fade;
     }
@@ -242,7 +282,7 @@ public:
 private:
     double sampleRate = 44100.0, phase = 0.0;
     float snhValue = 0.0f;
-    long delayCount = 0;
+    int64_t delayCount = 0; // 64-bit: a 32-bit long (Windows) wraps after ~12 h at 48 kHz
 };
 
 // ---------------- Voice ----------------
@@ -259,7 +299,6 @@ public:
         sampleRate = sr;
         fenv.setSampleRate(sr); aenv.setSampleRate(sr);
         vcf.reset();
-        hpf.prepare({ sr, 8, 1 });
         rng.setSeedRandomly();
         driftPh = rng.nextFloat();
         // 1-pole warmth lowpass (~12 kHz)
@@ -276,10 +315,10 @@ public:
         // pitch bend is NOT part of the target: it is added at render time so the
         // wheel responds instantly instead of crawling through portamento
         float target = (float)midiNote + p.tune / 100.0f;
-        if (!glide)
+        if (!glide || !hasPlayed) { curMidi1 = target; curMidi2 = target; }
+        targetMidi = target; // with glide: slide from the current pitch, oscs keep running
+        hasPlayed = true;
         {
-            curMidi1 = target; curMidi2 = target;
-            targetMidi = target;
             if (!wasActive)
             {
                 // true fresh attack: new circuit state + fade in.
@@ -304,10 +343,6 @@ public:
             // else: retrigger on a live voice — oscs/filter keep running, pitch
             // snaps, envelopes restart from current level: no dip, no thump
         }
-        else
-        {
-            targetMidi = target; // slide from current pitch, oscs keep running
-        }
         fenv.setParams(p.fa, p.fd, p.fs, p.fr);
         aenv.setParams(p.aa, p.ad, p.as, p.ar);
         if (retrigger) { fenv.noteOn(); aenv.noteOn(); }
@@ -331,7 +366,8 @@ public:
         // glide
         if (p.porta > 0.001f)
         {
-            float c = 1.0f - (float)std::exp(-1.0 / (sampleRate * (0.002 + p.porta * 0.4)));
+            // up to ~2.5 s (squared knob: fine control over short glides)
+            float c = 1.0f - (float)std::exp(-1.0 / (sampleRate * (0.002 + p.porta * p.porta * 2.5)));
             curMidi1 += (targetMidi - curMidi1) * c;
             curMidi2 += (targetMidi - curMidi2) * c;
         }
@@ -350,11 +386,20 @@ public:
             active = false; lastSample = 0.0f; fenv.reset(); aenv.reset(); return 0.0f;
         }
 
-        float pw1 = juce::jlimit(0.05f, 0.95f, p.vco1pw + p.vco1pwm * 0.4f * lfo);
-        float pw2 = juce::jlimit(0.05f, 0.95f, p.vco2pw + p.vco2pwm * 0.4f * lfo);
+        // PWM source switch (JP-8): the LFO, or ENV-1 (one-sided, opens with the envelope)
+        const float pwmMod = p.pwmSrc == 1 ? fenvV : lfo;
+        float pw1 = juce::jlimit(0.05f, 0.95f, p.vco1pw + p.vco1pwm * 0.4f * pwmMod);
+        float pw2 = juce::jlimit(0.05f, 0.95f, p.vco2pw + p.vco2pwm * 0.4f * pwmMod);
 
-        float lfoSemi1 = p.lfoVco1 * lfo * 1.0f;   // +/-1 semitone max
-        float lfoSemi2 = p.lfoVco2 * lfo * 1.0f;
+        // LFO -> VCO: squared knob up to +/-12 st (fine vibrato low on the knob,
+        // wide sirens at the top); the MOD lever adds up to +/-3 st of vibrato
+        const float lever = 3.0f * p.leverVco * lfo;
+        float lfoSemi1 = 12.0f * p.lfoVco1 * p.lfoVco1 * lfo + lever;
+        float lfoSemi2 = 12.0f * p.lfoVco2 * p.lfoVco2 * lfo + lever;
+        // ENV-1 -> VCO pitch (bipolar, squared up to +/-24 st), to VCO-1, VCO-2 or both
+        const float envSemi = 24.0f * p.envVco * std::fabs(p.envVco) * fenvV;
+        if (p.envVcoDst != 1) lfoSemi1 += envSemi;
+        if (p.envVcoDst != 0) lfoSemi2 += envSemi;
 
         // slow per-voice pitch drift on top of the static tolerance.
         // Kept to a whisper: movement comes from dual-osc beating instead.
@@ -362,13 +407,19 @@ public:
         if (driftPh >= 1.0) driftPh -= 1.0;
         float driftCents = std::sin(2.0f * juce::MathConstants<float>::pi * (float)driftPh) * 0.5f;
         float det1 = (slopDetune + driftCents) / 100.0f;        // semitones, osc 1
-        float det2 = (slopDetune * 0.8f + driftCents * 0.6f + 4.0f) / 100.0f; // osc 2 beats gently
+        // osc 2 tolerance only: the audible VCO-2 detune is the TUNE knob alone
+        // (a hidden +4 cents used to sit on top of it)
+        float det2 = (slopDetune * 0.8f + driftCents * 0.6f) / 100.0f;
 
         double m1 = rangeMultiplier(p.vco1range);
         double m2 = rangeMultiplier(p.vco2range);
 
         float v1 = midiToFreq(curMidi1 + p.pitchBend + lfoSemi1) * (float)m1;
         float v2base = midiToFreq(curMidi2 + p.pitchBend + lfoSemi2 + p.vco2tune / 100.0f) * (float)m2;
+        // VCO-2 LOW (JP-8): a sub-audio rate that ignores the keyboard, for slow
+        // X-MOD sweeps and sync beats; TUNE sets it (0.05 .. 12.8 Hz, 1 Hz centre)
+        if (p.vco2range == kRangeLow)
+            v2base = std::pow(2.0f, p.vco2tune / 25.0f + lfoSemi2 / 12.0f);
         // exact pow only for the (small, drifting) base detune; taps use cheap mults
         // NOTE: det1/det2 are in semitones -> /12 for octave ratio (12x bug if omitted!)
         float base1 = (float)std::pow(2.0, det1 / 12.0);
@@ -408,8 +459,37 @@ public:
                 f1m = f1u * (1.0 + p.xmod * 2.5 * s2);
             double dt1m = f1m / sampleRate;
             uph1[u] += dt1m;
-            if (uph1[u] >= 1.0) { uph1[u] -= std::floor(uph1[u]); if (p.sync) uph2[u] = 0.0; }
+            float syncPrevCorr = 0.0f;
+            if (uph1[u] >= 1.0)
+            {
+                uph1[u] -= std::floor(uph1[u]);
+                if (p.sync)
+                {
+                    // hard sync, band-limited: VCO-2 restarts at the fractional
+                    // moment VCO-1 wrapped (not on the sample grid), and the jump
+                    // is smoothed with a two-sample polyBLEP split across this
+                    // sample and the previous one (VCO-2's audio runs one sample
+                    // late while sync is on, so that sample is still open)
+                    const double d = juce::jlimit(0.0, 1.0, uph1[u] / juce::jmax(1.0e-9, dt1m)); // time since the wrap
+                    double phiS = uph2[u] - d * dt2; // VCO-2 phase at the sync instant
+                    phiS -= std::floor(phiS);
+                    uph2[u] = d * dt2;
+                    if (on2 && p.vco2wave != 4)
+                    {
+                        const float jump = naiveVCO2(p.vco2wave, 0.0, pw2) - naiveVCO2(p.vco2wave, phiS, pw2);
+                        s2 = oscSampleVCO2(p.vco2wave, uph2[u], pw2, dt2, rng) - jump * 0.5f * (float)((1.0 - d) * (1.0 - d));
+                        syncPrevCorr = jump * 0.5f * (float)(d * d);
+                    }
+                }
+            }
             else if (uph1[u] < 0.0) uph1[u] -= std::floor(uph1[u]);
+            if (p.sync)
+            {
+                const float out2 = s2Prev[u] + syncPrevCorr;
+                s2Prev[u] = s2;
+                s2 = out2;
+            }
+            else s2Prev[u] = s2;
             double blepDt = juce::jlimit(1.0e-9, 0.5, std::abs(dt1m));
             float s1 = on1 ? oscSample(p.vco1wave, uph1[u], pw1, blepDt, dummy, rng) : 0.0f;
 
@@ -427,7 +507,7 @@ public:
         float subFreq = v1 * 0.5f;
         float subAud = juce::jlimit(0.0f, 1.0f, (subFreq - 20.0f) / 10.0f);
         osc += std::sin(2.0 * juce::MathConstants<double>::pi * subPh)
-               * p.vco1level * p.mix1 * 0.32f * subAud;
+               * p.vco1level * p.mix1 * 0.64f * p.subLevel * subAud;
         outVcoMix = osc;
 
         // HPF (fixed steps) — one-pole HP approx
@@ -446,7 +526,7 @@ public:
         float envAmt = p.fenv * (1.0f + p.velsens * (velocity - 0.7f));
         float cutoffHz = p.cutoff
             * std::pow(2.0f, envAmt * 6.0f * fenvV)
-            * std::pow(2.0f, p.flfo * 3.0f * lfo)
+            * std::pow(2.0f, (p.lfoVcf + p.leverVcf) * 3.0f * lfo)
             * std::pow(2.0f, p.keytrk * ((float)note - 60.0f) / 12.0f);
         cutoffHz = juce::jlimit(30.0f, 19000.0f, cutoffHz * slopCut);
 
@@ -455,8 +535,9 @@ public:
         float drv = 1.0f + p.reso * 1.2f;
         float y = filtered * drv;
         filtered = y / (1.0f + 0.35f * std::fabs(y));
-        // resonance loudness compensation (peaks, not harshness)
-        filtered *= 1.0f / (1.0f + p.reso * 1.6f);
+        // resonance loudness compensation (peaks, not harshness); the 4-pole core
+        // already thins out with resonance, so this one is gentle
+        filtered *= 1.0f / (1.0f + p.reso * 0.6f);
 
         // analog top-end rolloff: softens digital edge above ~12 kHz
         warmY += warmG * (filtered - warmY);
@@ -480,7 +561,6 @@ public:
 
     double sampleRate = 44100.0;
     VoiceFilter vcf;
-    juce::dsp::FirstOrderTPTFilter<float> hpf;
 private:
     int age2 = 0;
     bool gated = true;
@@ -494,6 +574,8 @@ private:
     double driftPh = 0.0;
     float warmY = 0.0f, warmG = 0.5f;
     double subPh = 0.0;
+    float s2Prev[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; // VCO-2 one-sample delay line (sync BLEP)
+    bool hasPlayed = false; // poly portamento glides from the voice's previous note
     int clickCount = 96; // de-click fade progress (>=96 = idle)
     float lastAmp = 0.0f;
     float gateAmp = 0.0f;    // GATE-mode VCA level (short ramp, follows the key)

@@ -75,6 +75,6 @@
   <PARAM id="vco2wave" value="0.0"/>
   <PARAM id="velsens" value="0.3"/>
   <PARAM id="voicemode" value="0.0"/>
-  <PARAM id="volume" value="0.942"/>
+  <PARAM id="volume" value="1.0024"/>
   <PARAM id="xmod" value="0.0"/>
 </ERSA8>

@@ -15,7 +15,7 @@ namespace P
     static constexpr const char* VCO1_PWM   = "vco1pwm";    // LFO->PW amount
     // VCO-2
     static constexpr const char* VCO2_WAVE  = "vco2wave";   // 0 saw 1 pulse 2 square 3 sine 4 noise
-    static constexpr const char* VCO2_RANGE = "vco2range";
+    static constexpr const char* VCO2_RANGE = "vco2range";  // as VCO-1, plus 5 = LOW (sub-audio, for X-MOD)
     static constexpr const char* VCO2_LEVEL = "vco2level";
     static constexpr const char* VCO2_PW    = "vco2pw";
     static constexpr const char* VCO2_PWM   = "vco2pwm";
@@ -25,13 +25,16 @@ namespace P
     static constexpr const char* MIXC       = "oscmix";      // VCO1<->VCO2 balance 0..1
     static constexpr const char* SYNC       = "sync";
     static constexpr const char* XMOD       = "xmod";       // VCO2 -> VCO1 FM amount
+    static constexpr const char* SUBLEVEL   = "sublevel";   // sine sub one octave under VCO-1 (0.5 = classic level)
+    static constexpr const char* PWMSRC     = "pwmsrc";     // PWM source: 0 LFO 1 ENV-1
+    static constexpr const char* ENVVCO     = "envvco";     // ENV-1 -> VCO pitch, bipolar
+    static constexpr const char* ENVVCODST  = "envvcodst";  // ENV-1 pitch target: 0 VCO-1 1 VCO-2 2 both
     // Mixer / HPF
     static constexpr const char* HPF        = "hpf";        // 0 off 1..3
     // VCF
     static constexpr const char* CUTOFF     = "cutoff";
     static constexpr const char* RESO       = "reso";
     static constexpr const char* FENV       = "fenv";       // -1..+1
-    static constexpr const char* FLFO       = "flfo";
     static constexpr const char* KEYTRK     = "keytrk";
     static constexpr const char* SLOPE       = "slope";      // 0:12dB 1:24dB
     // Envelopes
@@ -46,6 +49,9 @@ namespace P
     static constexpr const char* LFO_VCO1  = "lfovco1";
     static constexpr const char* LFO_VCO2  = "lfovco2";
     static constexpr const char* LFO_VCF   = "lfovcf";
+    static constexpr const char* LFO_SYNC  = "lfosync";  // 0 free rate, else TempoSync division + 1
+    static constexpr const char* MOD_VCO   = "modvco";   // MOD lever (CC1) -> LFO vibrato depth
+    static constexpr const char* MOD_VCF   = "modvcf";   // MOD lever (CC1) -> LFO filter depth
     // VCA / master
     static constexpr const char* VCA_MODE   = "vcamode";   // 0 gate 1 env
     static constexpr const char* VOLUME     = "volume";
@@ -58,9 +64,11 @@ namespace P
     // Arp
     static constexpr const char* ARP_ON    = "arpon";
     static constexpr const char* ARP_MODE  = "arpmode";  // 0 up 1 down 2 updown 3 random
-    static constexpr const char* ARP_DIV   = "arpdiv";   // host-synced division 0..7
+    static constexpr const char* ARP_DIV   = "arpdiv";   // host-synced division 0..12 (1/2D slowest .. 1/32 fastest)
     static constexpr const char* ARP_OCT   = "arpoct";   // 1..4
     static constexpr const char* ARP_HOLD  = "arphold";
+    static constexpr const char* ARP_GATE  = "arpgate";  // note length, fraction of a step
+    static constexpr const char* ARP_SWING = "arpswing"; // delays every second step
     // FX — chorus
     static constexpr const char* CH_ON    = "chon";
     static constexpr const char* CH_MODE  = "chmode";   // 0 manual 1:vintage I 2:vintage II 3:extended
@@ -78,7 +86,7 @@ namespace P
     static constexpr const char* DL_TIME = "dltime";  // ms
     static constexpr const char* DL_FB   = "dlfb";
     static constexpr const char* DL_MIX  = "dlmix";
-    static constexpr const char* DL_SYNC = "dlsync";   // 0 free 1 sync (1/8d etc via choice->time computed? keep simple: sync divides)
+    static constexpr const char* DL_SYNC = "dlsync";   // 0 free, else a host-synced note value (TempoSync::kDelayChoices)
     // FX — saturator (master glue, post-reverb)
     static constexpr const char* ST_ON   = "ston";
     static constexpr const char* ST_AMT  = "stamt";

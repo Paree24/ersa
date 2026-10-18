@@ -4,6 +4,7 @@
 #include "Parameters.h"
 #include "DSPEngine.h"
 #include "Presets.h"
+#include "SnapshotUndo.h"
 
 class Ersa8Processor : public juce::AudioProcessor
 {
@@ -39,12 +40,43 @@ public:
     void panic();    // all-silence: kills voices, latch, FX tails (applied at the next audio block)
     juce::String getPresetName(int i) const;
 
+    // ---- undo / redo (message thread) ----
+    // Knob / switch gestures are one step each; preset loads, Init and
+    // randomize / mutate wrap their parameter writes in undoStep().
+    std::unique_ptr<SnapshotUndo::Transaction> undoStep()
+    {
+        return undo != nullptr ? std::make_unique<SnapshotUndo::Transaction>(*undo) : nullptr;
+    }
+    bool canUndo() const { return undo != nullptr && undo->canUndo(); }
+    bool canRedo() const { return undo != nullptr && undo->canRedo(); }
+    void undoEdit() { if (undo != nullptr) undo->undo(); }
+    void redoEdit() { if (undo != nullptr) undo->redo(); }
+
+    // ---- randomize / mutate with section locks (one undo step each) ----
+    // Only knob positions move: the signal path never changes. Volume,
+    // tune, bend, portamento, voice mode, VCA mode and FX bypass are never touched.
+    enum RandGroup { RG_VCO, RG_VCF, RG_ENV, RG_LFO, RG_ARP, RG_FX, RG_COUNT };
+    static juce::StringArray randGroupNames() { return { "VCOs + Mix", "VCF", "Envelopes", "LFO + Mod", "Arp", "Effects" }; }
+    static int paramGroup(const juce::String& id); // -1 = never randomized
+    bool isGroupLocked(int g) const { return ((int)apvts.state.getProperty("randLocks", 1 << RG_ARP) >> g) & 1; }
+    void setGroupLocked(int g, bool locked);
+    void randomize();
+    void mutate(float amount = 0.12f);
+
+    // ---- output meter + scope (written by the audio thread, read by the UI) ----
+    static constexpr int kScopeSize = 1024;
+    float getMeter(int ch) const { return meter[ch & 1].load(); }
+    void copyScope(float* dest, int n) const; // newest n samples, oldest first
+
 private:
     SynthParams collectParams();
     void handleMidi(const juce::MidiMessage& msg);
     int allocateVoice(int note, bool monoLike);
-    void arpStep();
+    void arpStep(double stepSamples);
+    void arpRelease();
     void updateHeld(int note, bool on);
+    void releaseNote(int note, const SynthParams& tmp);
+    void clearKeyState();
     static void voicePanGains(int note, float& gL, float& gR)
     {
         float pan = juce::jlimit(-1.0f, 1.0f, ((float)note - 60.0f) / 36.0f) * 0.35f;
@@ -88,17 +120,27 @@ private:
     bool lastArp = false, lastHold = false;
 
     // Arp / performance state
-    std::vector<int> heldNotes;      // sorted unique
+    std::vector<int> heldNotes;      // unique, in key-down order
     std::vector<int> arpNotes;       // expanded w/ octaves
     int arpStepIdx = 0;
     double arpSamplesToNext = 0.0;
     int arpCurrentNote = -1;
     bool arpNoteActive = false;
+    int arpVoice = 0;          // voice the current arp step sounds on
+    double arpGateLeft = 0.0;  // samples until the step's gate ends (0 = runs to the next step)
+    bool arpOddStep = false;   // swing: odd steps are the short ones
+    float heldVel[128] = {};   // key velocities (arp plays them)
+    int nextVoice = 0;         // rotating voice assignment
     // steal crossfade state per voice slot
     float stealBufL[kVoices] = {};
     float stealBufR[kVoices] = {};
     int stealLeft[kVoices] = {};
     double hostBpm = 120.0;
+    // performance controls: hold pedal (CC64) and the MOD lever (CC1)
+    bool keyDown[128] = {};    // physical key state
+    bool sustained[128] = {};  // key up while the pedal was down: still sounding
+    bool sustainDown = false;
+    float modLever = 0.0f, modLeverSm = 0.0f; // 0..1, smoothed in the render loop
     float bendSemis = 0.0f;
     float bendSm = 0.0f; // smoothed bend for held voices (note-ons use raw = instant)
     int transposeOct = 0;
@@ -111,6 +153,10 @@ private:
     std::atomic<bool> panicRequest { false }, initRequest { false };
     void doPanic();
     void doInitReset();
+    std::unique_ptr<SnapshotUndo> undo;
+    std::atomic<float> meter[2] {};
+    float scopeBuf[kScopeSize] = {};
+    std::atomic<int> scopePos { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Ersa8Processor)
 };

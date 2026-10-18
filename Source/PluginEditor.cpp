@@ -30,6 +30,33 @@ ErsaContent::ErsaContent(Ersa8Processor& p)
     panicBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2c2c33));
     panicBtn.setColour(juce::TextButton::textColourOnId, ErsaColors::red);
     panicBtn.setColour(juce::TextButton::textColourOffId, ErsaColors::red);
+    // edit history + randomize
+    for (auto* b : { &undoBtn, &redoBtn, &randBtn, &mutateBtn, &locksBtn })
+    {
+        addAndMakeVisible(b);
+        b->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2c2c33));
+        b->setColour(juce::TextButton::textColourOnId, ErsaColors::text);
+        b->setColour(juce::TextButton::textColourOffId, ErsaColors::text);
+    }
+    undoBtn.onClick = [&] { proc.undoEdit(); refreshPresetName(); };
+    redoBtn.onClick = [&] { proc.redoEdit(); refreshPresetName(); };
+    randBtn.onClick = [&] { proc.randomize(); presetBtn.setButtonText("Random"); };
+    mutateBtn.onClick = [&] { proc.mutate(); };
+    locksBtn.onClick = [&]
+    {
+        juce::PopupMenu m; // ticked = locked: RAND / MUTATE leave that section alone
+        m.addSectionHeader("Locked sections");
+        const auto names = Ersa8Processor::randGroupNames();
+        for (int g = 0; g < Ersa8Processor::RG_COUNT; ++g) m.addItem(g + 1, names[g], true, proc.isGroupLocked(g));
+        m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&locksBtn),
+                        [this](int id) { if (id > 0) proc.setGroupLocked(id - 1, !proc.isGroupLocked(id - 1)); });
+    };
+    undoBtn.setTooltip("Undo the last change (Ctrl+Z)");
+    redoBtn.setTooltip("Redo (Ctrl+Shift+Z)");
+    randBtn.setTooltip("Random patch inside musical limits (unlocked sections only, one undo step)");
+    mutateBtn.setTooltip("Nudge the unlocked knobs a little (one undo step)");
+    locksBtn.setTooltip("Choose which sections RAND / MUTATE leave alone");
+    startTimerHz(8);
 
     // ===== top row groups =====
     auto* gLfo   = addGroup("LFO", this, 760, 64, 132, 250, ErsaColors::accentYellow);
@@ -65,7 +92,7 @@ ErsaContent::ErsaContent(Ersa8Processor& p)
     // VCO-2 (three small knobs: columns mirrored around the group centre)
     addChoice(P::VCO2_WAVE, gVco2, 43, 30, 110);
     auto* range2 = addChoice(P::VCO2_RANGE, gVco2, 43, 58, 110);
-    range2->setTooltip("Oscillator octave: -2/-1 below, 0 = concert pitch, +1/+2 above");
+    range2->setTooltip("Oscillator octave: -2/-1 below, 0 = concert pitch, +1/+2 above; Low = sub-audio rate set by Tune (for X-Mod / sync)");
     addCaption("Octave", gVco2, 43, 82, 110);
     addKnob(P::VCO2_LEVEL, "Level", gVco2, 8, 115);
     addKnob(P::VCO2_PW, "PW", gVco2, 124, 115);
@@ -162,6 +189,27 @@ ErsaContent::ErsaContent(Ersa8Processor& p)
     addToggle(P::ST_ON, "Sat On", gEq, 117, 180, 60, 34);
     addChoice(P::ST_MODE, gEq, 203, 179, 84);
 
+    // ===== third row: the JP-8 modulation extras, arp groove, output =====
+    auto* gMod  = addGroup("VCO MOD", this, 8, 574, 380, 132, ErsaColors::orange);
+    auto* gLev  = addGroup("LFO SYNC / MOD LEVER", this, 394, 574, 240, 132, ErsaColors::accentYellow);
+    auto* gGrv  = addGroup("ARP GROOVE", this, 640, 574, 160, 132, ErsaColors::accentPink);
+    auto* gOut  = addGroup("OUTPUT", this, 806, 574, 426, 132, ErsaColors::accentWhite);
+    addKnob(P::SUBLEVEL, "Sub", gMod, 8, 34, 64, 62)->setTooltip("Sine sub one octave under VCO-1");
+    addChoice(P::PWMSRC, gMod, 84, 48, 84);
+    addCaption("PWM Src", gMod, 84, 76, 84);
+    addKnob(P::ENVVCO, "ENV-1>VCO", gMod, 182, 34, 84, 62)->setTooltip("ENV-1 sweeps the pitch (centre = off)");
+    addChoice(P::ENVVCODST, gMod, 276, 48, 92);
+    addCaption("Target", gMod, 276, 76, 92);
+    addChoice(P::LFO_SYNC, gLev, 10, 48, 84)->setTooltip("Lock the LFO rate to the host tempo (Off = the Rate knob)");
+    addCaption("LFO Sync", gLev, 10, 76, 84);
+    addKnob(P::MOD_VCO, "Lever>VCO", gLev, 100, 34, 66, 62)->setTooltip("Mod wheel adds LFO vibrato, this deep");
+    addKnob(P::MOD_VCF, "Lever>VCF", gLev, 168, 34, 66, 62)->setTooltip("Mod wheel adds LFO filter wobble, this deep");
+    addKnob(P::ARP_GATE, "Gate", gGrv, 10, 34, 66, 62)->setTooltip("Arp note length (full = runs into the next step)");
+    addKnob(P::ARP_SWING, "Swing", gGrv, 84, 34, 66, 62)->setTooltip("Every second arp step comes late");
+    scope = std::make_unique<OutputScope>(proc);
+    gOut->addAndMakeVisible(*scope);
+    scope->setBounds(10, 30, 406, 92);
+
     // preset browser overlay (created last: paints above everything)
     browser = std::make_unique<PresetBrowser>(proc, lnf);
     addAndMakeVisible(browser.get());
@@ -221,7 +269,12 @@ juce::Slider* ErsaContent::addKnob(const juce::String& param, const juce::String
     s->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     s->setLookAndFeel(&lnf);
     if (auto* par = proc.apvts.getParameter(param))
+    {
         sAtt.add(new juce::AudioProcessorValueTreeState::SliderAttachment(proc.apvts, param, *s));
+        // live value bubble while hovering / dragging; double-click resets
+        s->setPopupDisplayEnabled(true, true, this);
+        s->setDoubleClickReturnValue(true, par->convertFrom0to1(par->getDefaultValue()));
+    }
     auto* l = new juce::Label(param + "_l", label);
     labels.emplace_back(l);
     parent->addAndMakeVisible(l);
@@ -261,6 +314,52 @@ juce::ToggleButton* ErsaContent::addToggle(const juce::String& param, const juce
     return t;
 }
 
+void ErsaContent::timerCallback()
+{
+    undoBtn.setEnabled(proc.canUndo());
+    redoBtn.setEnabled(proc.canRedo());
+}
+
+OutputScope::OutputScope(Ersa8Processor& p) : proc(p) { startTimerHz(30); }
+
+void OutputScope::paint(juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour(juce::Colour(0xff15161a));
+    g.fillRoundedRectangle(r, 4.0f);
+    // meters: two bars on the left, 0 dBFS at the top, -48 dB at the bottom
+    auto mr = r.removeFromLeft(26.0f).reduced(4.0f, 6.0f);
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        auto bar = mr.withWidth(7.0f).translated(ch * 10.0f, 0.0f);
+        g.setColour(juce::Colour(0xff2c2c33));
+        g.fillRect(bar);
+        const float db = juce::Decibels::gainToDecibels(proc.getMeter(ch), -48.0f);
+        const float h = bar.getHeight() * (db + 48.0f) / 48.0f;
+        g.setColour(db > -1.0f ? ErsaColors::red : ErsaColors::accentGreen);
+        g.fillRect(bar.withTop(bar.getBottom() - h));
+    }
+    // scope: the newest 512 samples, started at a rising zero crossing so a
+    // steady note stands still
+    float tmp[Ersa8Processor::kScopeSize];
+    proc.copyScope(tmp, Ersa8Processor::kScopeSize);
+    int start = 0;
+    for (int i = 1; i < Ersa8Processor::kScopeSize - 512; ++i)
+        if (tmp[i - 1] <= 0.0f && tmp[i] > 0.0f) { start = i; break; }
+    auto sr = r.reduced(6.0f, 6.0f);
+    g.setColour(juce::Colour(0xff2c2c33));
+    g.drawHorizontalLine((int)sr.getCentreY(), sr.getX(), sr.getRight());
+    juce::Path path;
+    for (int i = 0; i < 512; ++i)
+    {
+        const float x = sr.getX() + sr.getWidth() * (float)i / 511.0f;
+        const float y = sr.getCentreY() - juce::jlimit(-1.0f, 1.0f, tmp[start + i]) * sr.getHeight() * 0.5f;
+        if (i == 0) path.startNewSubPath(x, y); else path.lineTo(x, y);
+    }
+    g.setColour(ErsaColors::accentWhite.withAlpha(0.85f));
+    g.strokePath(path, juce::PathStrokeType(1.4f));
+}
+
 void ErsaContent::refreshPresetName()
 {
     int cur = proc.getCurrentProgram();
@@ -294,22 +393,39 @@ void ErsaContent::resized()
     nextBtn.setBounds(1144, 14, 32, 28);
     initBtn.setBounds(852, 14, 40, 28);
     panicBtn.setBounds(1184, 14, 48, 28);
+    undoBtn.setBounds(250, 14, 52, 28);
+    redoBtn.setBounds(306, 14, 52, 28);
+    randBtn.setBounds(640, 14, 54, 28);
+    mutateBtn.setBounds(698, 14, 70, 28);
+    locksBtn.setBounds(772, 14, 60, 28);
     if (browser != nullptr)
         browser->setBounds(0, 0, baseW, baseH);
 }
 
 // ---------------- resizable host editor ----------------
 Ersa8Editor::Ersa8Editor(Ersa8Processor& p)
-    : juce::AudioProcessorEditor(p), content(p), corner(this, getConstrainer())
+    : juce::AudioProcessorEditor(p), proc(p), content(p), corner(this, getConstrainer())
 {
     setSize(ErsaContent::baseW, ErsaContent::baseH);
     setResizable(true, true);
-    setResizeLimits(744, 352, 1984, 938); // 0.6x .. 1.6x
+    setResizeLimits(744, 428, 1984, 1142); // 0.6x .. 1.6x
     addAndMakeVisible(content);
     addAndMakeVisible(corner);
+    setWantsKeyboardFocus(true);
 }
 
 Ersa8Editor::~Ersa8Editor() {}
+
+bool Ersa8Editor::keyPressed(const juce::KeyPress& k)
+{
+    const auto m = k.getModifiers();
+    if (m.isCommandDown() && (k.getKeyCode() == 'Z' || k.getKeyCode() == 'z'))
+    {
+        if (m.isShiftDown()) proc.redoEdit(); else proc.undoEdit();
+        return true;
+    }
+    return false;
+}
 
 void Ersa8Editor::paint(juce::Graphics& g)
 {
