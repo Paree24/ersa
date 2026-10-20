@@ -45,6 +45,7 @@ target_sources(ERSA PRIVATE
   Source/Presets.cpp
   Source/DSPEngine.cpp
   Source/ErsaLookAndFeel.cpp
+  Source/PastelViews.cpp
 )
 
 target_include_directories(ERSA PRIVATE Source)
@@ -84,6 +85,7 @@ target_sources(ErsaHarness PRIVATE
   Source/Presets.cpp
   Source/DSPEngine.cpp
   Source/ErsaLookAndFeel.cpp
+  Source/PastelViews.cpp
   Test/Harness.cpp
 )
 target_include_directories(ErsaHarness PRIVATE Source)

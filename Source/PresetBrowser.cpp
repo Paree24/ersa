@@ -1,7 +1,9 @@
 #include "PresetBrowser.h"
 #include "PluginProcessor.h"
 
-static const char* kBanks[] = { "All", "Bass", "Lead", "Pad", "Orch", "Keys", "Arp", "FX", "Clsc", "User" };
+// bank 8 ("Classics") is retired: its 16 presets now carry their real category tags.
+// The slot stays so bank numbers / the User index (9) are unchanged; its button is hidden.
+static const char* kBanks[] = { "All", "Bass", "Lead", "Pad", "Orch", "Keys", "Arp", "FX", "Classics", "User" };
 
 PresetBrowser::PresetBrowser(Ersa8Processor& p, ErsaLookAndFeel& l)
     : proc(p), lnf(l)
@@ -26,6 +28,7 @@ PresetBrowser::PresetBrowser(Ersa8Processor& p, ErsaLookAndFeel& l)
         btn->setColour(juce::TextButton::textColourOffId, ErsaColors::textDim);
         btn->setColour(juce::TextButton::textColourOnId, ErsaColors::orangeHi);
         btn->onClick = [this, b] { activeBank = b; refreshBankButtons(); rebuildRows(); };
+        if (b == 8) btn->setVisible(false);
     }
     refreshBankButtons();
 
@@ -238,15 +241,15 @@ void PresetBrowser::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colours::black.withAlpha(0.55f)); // scrim
     g.setColour(ErsaColors::panel);
-    g.fillRoundedRectangle(panel.toFloat(), 6.0f);
+    g.fillRoundedRectangle(panel.toFloat(), 8.0f);
     g.setColour(ErsaColors::border);
-    g.drawRoundedRectangle(panel.toFloat().reduced(0.5f), 6.0f, 1.0f);
-    g.setColour(ErsaColors::bar);
-    g.fillRoundedRectangle(panel.getX(), panel.getY(), panel.getWidth(), 30, 6.0f);
-    g.fillRect(panel.getX(), panel.getY() + 24, panel.getWidth(), 6);
-    g.setColour(ErsaColors::barText);
-    g.setFont(lnf.titleFont(14.0f));
-    g.drawText("PRESETS", panel.getX() + 12, panel.getY(), 200, 30,
+    g.drawRoundedRectangle(panel.toFloat().reduced(0.5f), 8.0f, 1.0f);
+    // v3 panel header: accent dot + title
+    g.setColour(ErsaColors::orange);
+    g.fillEllipse((float)panel.getX() + 12.4f, (float)panel.getY() + 11.4f, 7.2f, 7.2f);
+    g.setColour(ErsaColors::text);
+    g.setFont(lnf.logoFont(13.0f));
+    g.drawText("PRESETS", panel.getX() + 26, panel.getY(), 200, 30,
                juce::Justification::centredLeft, false);
 }
 
@@ -255,9 +258,13 @@ void PresetBrowser::resized()
     panel = juce::Rectangle<int>(300, 46, 640, 494);
     closeBtn.setBounds(panel.getRight() - 40, panel.getY() + 4, 32, 22);
     search.setBounds(panel.getX() + 12, panel.getY() + 40, panel.getWidth() - 24, 26);
-    int bw = (panel.getWidth() - 24 - 9 * 6) / 10;
+    int shown = 0;
+    for (auto& btn : bankBtns) if (btn->isVisible()) ++shown;
+    int bw = (panel.getWidth() - 24 - (shown - 1) * 6) / juce::jmax(1, shown);
+    int col = 0;
     for (size_t b = 0; b < bankBtns.size(); ++b)
-        bankBtns[b]->setBounds(panel.getX() + 12 + (int)b * (bw + 6), panel.getY() + 72, bw, 22);
+        if (bankBtns[b]->isVisible())
+            bankBtns[b]->setBounds(panel.getX() + 12 + (col++) * (bw + 6), panel.getY() + 72, bw, 22);
     list.setBounds(panel.getX() + 12, panel.getY() + 102, panel.getWidth() - 24, 316);
     nameBox.setBounds(panel.getX() + 12, panel.getBottom() - 34, 260, 24);
     saveBtn.setBounds(panel.getX() + 278, panel.getBottom() - 34, 110, 24);

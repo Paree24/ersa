@@ -456,7 +456,12 @@ public:
             double f1u = (double)v1 * (double)base1 * (double)p.tapM1[u];
             double f1m = f1u;
             if (p.xmod > 0.001f)
-                f1m = f1u * (1.0 + p.xmod * 2.5 * s2);
+            {
+                // a pulse that is not 50% has a DC offset; left in, it shifts VCO-1's
+                // average frequency (Vintage Poly sat ~135 cents flat). FM the AC part only.
+                const float dc = p.vco2wave == 1 ? 0.75f * (2.0f * pw2 - 1.0f) : 0.0f;
+                f1m = f1u * (1.0 + p.xmod * 2.5 * (s2 - dc));
+            }
             double dt1m = f1m / sampleRate;
             uph1[u] += dt1m;
             float syncPrevCorr = 0.0f;

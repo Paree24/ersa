@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "ErsaLookAndFeel.h"
 #include "PresetBrowser.h"
+#include "PastelViews.h"
 
 class Ersa8Processor;
 
@@ -35,7 +36,8 @@ private:
 
     juce::TextButton presetBtn { "Init Patch" };
     juce::TextButton prevBtn { "<" }, nextBtn { ">" }, initBtn { "INIT" }, panicBtn { "PANIC" };
-    juce::TextButton undoBtn { "UNDO" }, redoBtn { "REDO" }, randBtn { "RAND" }, mutateBtn { "MUTATE" }, locksBtn { "LOCKS" };
+    juce::TextButton undoBtn { juce::String::fromUTF8("\xe2\x86\xb6") }, redoBtn { juce::String::fromUTF8("\xe2\x86\xb7") };
+    juce::TextButton randBtn { "RANDOM" }, mutateBtn { "MUTATE" }, locksBtn { "LOCKS" };
     std::unique_ptr<OutputScope> scope;
     void timerCallback() override; // undo / redo enable state
     std::unique_ptr<PresetBrowser> browser;
@@ -45,18 +47,36 @@ private:
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     std::vector<std::unique_ptr<juce::Label>> labels;
     std::vector<std::unique_ptr<juce::GroupComponent>> groups;
+    std::vector<std::unique_ptr<juce::Component>> views; // direct-manipulation views + segmented choices
     juce::OwnedArray<juce::AudioProcessorValueTreeState::SliderAttachment> sAtt;
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> cAtt;
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> bAtt;
 
+    // knob centred on (cx, cy) with radius r; name + live value printed underneath
     juce::Slider* addKnob(const juce::String& param, const juce::String& label,
-                          juce::Component* parent, int x, int y, int w = 64, int h = 62);
+                          juce::Component* parent, int cx, int cy, int r,
+                          juce::Colour accent = {}, bool bipolar = false);
+    juce::Slider* addDepth(const juce::String& param, const juce::String& label,
+                           juce::Component* parent, int x, int y, int w); // thin labelled slider
+    template <typename V, typename... Args>
+    V* addView(juce::Component* parent, juce::Rectangle<int> bounds, Args&&... args)
+    {
+        auto* v = new V(std::forward<Args>(args)...);
+        views.emplace_back(v);
+        parent->addAndMakeVisible(v);
+        v->setBounds(bounds);
+        return v;
+    }
+    pastel::SegChoice* addSeg(const juce::String& param, juce::Component* parent, juce::Rectangle<int> bounds,
+                            juce::StringArray labels = {}, std::vector<pastel::Wave> icons = {});
     juce::ComboBox* addChoice(const juce::String& param, juce::Component* parent, int x, int y, int w = 110, int h = 22);
     juce::ToggleButton* addToggle(const juce::String& param, const juce::String& label,
                                   juce::Component* parent, int x, int y, int w = 64, int h = 34);
     juce::GroupComponent* addGroup(const juce::String& title, juce::Component* parent, int x, int y, int w, int h,
                                    juce::Colour accent = ErsaColors::orange);
-    juce::Label* addCaption(const juce::String& text, juce::Component* parent, int x, int y, int w);
+    juce::ToggleButton* addPower(const juce::String& param, juce::GroupComponent* group); // header power glyph
+    juce::Label* addCaption(const juce::String& text, juce::Component* parent, int x, int y, int w,
+                            juce::Justification just = juce::Justification::centredLeft);
     void refreshPresetName();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ErsaContent)

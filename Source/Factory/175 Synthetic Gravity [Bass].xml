@@ -71,7 +71,7 @@
   <PARAM id="vco2pw" value="0.5"/>
   <PARAM id="vco2pwm" value="0.0"/>
   <PARAM id="vco2range" value="1.0"/>
-  <PARAM id="vco2tune" value="20.0"/>
+  <PARAM id="vco2tune" value="8.0"/>
   <PARAM id="vco2wave" value="0.0"/>
   <PARAM id="velsens" value="0.5"/>
   <PARAM id="voicemode" value="1.0"/>

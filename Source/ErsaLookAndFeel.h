@@ -1,28 +1,30 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// ERSA-8 interface design language (see mockup.png):
-// near-black charcoal, thin burnt-orange panel borders, solid orange section
-// bars with dark titles, needle knobs, geometric Barlow titles + Inter body text.
+// ERSA-8 interface design language (v3, after Pastel EFX Grid; see mockup/redesign_v3.png):
+// near-black charcoal, thin neutral panel edges, dot + title headers, arc knobs with
+// value readouts, live views you drag. Orange is the sound path, teal is modulation,
+// rose is the effects; nothing else is coloured.
 struct ErsaColors
 {
     static inline const juce::Colour bg        { 0xff141518 };
-    static inline const juce::Colour header    { 0xff17191d };
-    static inline const juce::Colour panel     { 0xff1c2125 };
-    static inline const juce::Colour border    { 0xffe28960 }; // thin panel outline
-    static inline const juce::Colour bar       { 0xffe28960 }; // solid section bar
-    static inline const juce::Colour barText   { 0xff241a12 }; // dark text on orange
-    static inline const juce::Colour orange    { 0xffe28960 }; // accents, arcs, needles
-    static inline const juce::Colour orangeHi  { 0xffffa67c }; // LED / hot states
-    static inline const juce::Colour red       { 0xffe04a3a }; // panic / destructive
-    // section accents
-    static inline const juce::Colour accentGreen  { 0xff45d47a };
-    static inline const juce::Colour accentYellow { 0xffd4b145 };
-    static inline const juce::Colour accentPink   { 0xffffacce };
-    static inline const juce::Colour accentBlue   { 0xff45d4bd };
-    static inline const juce::Colour accentWhite  { 0xfff2f2f2 };
+    static inline const juce::Colour header    { 0xff141518 };
+    static inline const juce::Colour panel     { 0xff1c1f24 };
+    static inline const juce::Colour inner     { 0xff16181c }; // view wells
+    static inline const juce::Colour grid      { 0xff24272c };
+    static inline const juce::Colour border    { 0xff33363c }; // thin panel outline
+    static inline const juce::Colour edge      { 0xff3a3d43 }; // control outline
+    static inline const juce::Colour bar       { 0xfff5a05a }; // browser header bar
+    static inline const juce::Colour barText   { 0xff1b1d22 }; // dark text on a filled accent
+    static inline const juce::Colour orange    { 0xfff5a05a }; // sound path
+    static inline const juce::Colour orangeHi  { 0xffffc08a };
+    static inline const juce::Colour teal      { 0xff8fd0c2 }; // modulation
+    static inline const juce::Colour rose      { 0xffe9a3b8 }; // effects
+    static inline const juce::Colour red       { 0xffe88a8a }; // panic / clip
+    static inline const juce::Colour handle    { 0xfff4f1ec }; // drag handles, needles
     static inline const juce::Colour text      { 0xffd9d5d0 };
     static inline const juce::Colour textDim   { 0xff8f8b85 };
+    static inline const juce::Colour faint     { 0xff5c5a56 };
     static inline const juce::Colour track     { 0xff33363c };
     static inline const juce::Colour comboBg   { 0xff232529 };
 };
@@ -35,7 +37,10 @@ public:
     juce::Font uiFont(float h) const;    // Lato Regular, body/labels
     juce::Font titleFont(float h) const; // Lato Bold, bars/buttons
     juce::Font logoFont(float h) const;  // Lato Black, wordmark
-    static juce::Colour accentFor(juce::Component& c); // section accent via parent group
+    // section accent: the component's own "accent" property, else the enclosing group's
+    static juce::Colour accentFor(juce::Component& c);
+    static void drawPower(juce::Graphics&, juce::Rectangle<float> r, juce::Colour c, bool on);
+    static void drawLogo(juce::Graphics&, float x, float y);
 
     void drawRotarySlider(juce::Graphics&, int x, int y, int w, int h,
                           float pos, float start, float end, juce::Slider&) override;
@@ -47,6 +52,7 @@ public:
     void drawComboBox(juce::Graphics&, int w, int h, bool down, int bx, int by, int bw, int bh,
                       juce::ComboBox&) override;
     juce::Font getComboBoxFont(juce::ComboBox&) override;
+    void positionComboBoxText(juce::ComboBox&, juce::Label&) override;
     void drawGroupComponentOutline(juce::Graphics&, int w, int h, const juce::String&,
                             const juce::Justification&, juce::GroupComponent&) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&,

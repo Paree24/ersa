@@ -37,8 +37,8 @@
   <PARAM id="lfodelay" value="0.5"/>
   <PARAM id="lforate" value="6.0"/>
   <PARAM id="lfovcf" value="0.0"/>
-  <PARAM id="lfovco1" value="0.2"/>
-  <PARAM id="lfovco2" value="0.2"/>
+  <PARAM id="lfovco1" value="0.15"/>
+  <PARAM id="lfovco2" value="0.15"/>
   <PARAM id="lfowave" value="1.0"/>
   <PARAM id="oscmix" value="0.5"/>
   <PARAM id="phdepth" value="0.5"/>

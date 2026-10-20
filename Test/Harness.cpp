@@ -533,6 +533,7 @@ int main(int argc, char** argv)
             { 0, 48, 65.41f, "Sub 16'" }, { 5, 48, 65.41f, "Acid 16'" },
             { 16, 48, 130.81f, "Lead 8'" }, { 64, 48, 130.81f, "Keys 8'" },
             { 49, 48, 65.41f, "Cello 16'" }, { 50, 48, 261.63f, "Violin 4'" },
+            { 115, 48, 130.81f, "Vintage Poly X-Mod" }, // DC-free FM regression
         };
         for (auto& t : tests)
         {

@@ -1,5 +1,6 @@
 #include "ErsaLookAndFeel.h"
 #include "ErsaAssets.h"
+#include "PastelViews.h"
 
 ErsaLookAndFeel::ErsaLookAndFeel()
 {
@@ -9,6 +10,19 @@ ErsaLookAndFeel::ErsaLookAndFeel()
                                                          ErsaAssets::LatoBold_ttfSize);
     latoBlack = juce::Typeface::createSystemTypefaceFor(ErsaAssets::LatoBlack_ttf,
                                                          ErsaAssets::LatoBlack_ttfSize);
+    // the shared v3 views draw with ERSA's palette and Lato
+    pastel::Theme::accent  = ErsaColors::orange;
+    pastel::Theme::inner   = ErsaColors::inner;
+    pastel::Theme::grid    = ErsaColors::grid;
+    pastel::Theme::edge    = ErsaColors::edge;
+    pastel::Theme::comboBg = ErsaColors::comboBg;
+    pastel::Theme::text    = ErsaColors::text;
+    pastel::Theme::textDim = ErsaColors::textDim;
+    pastel::Theme::faint   = ErsaColors::faint;
+    pastel::Theme::handle  = ErsaColors::handle;
+    pastel::Theme::ink     = ErsaColors::barText;
+    pastel::Theme::regular = latoReg;
+    pastel::Theme::bold    = latoBold;
 }
 
 juce::Font ErsaLookAndFeel::uiFont(float h) const
@@ -29,124 +43,139 @@ juce::Font ErsaLookAndFeel::logoFont(float h) const
     return titleFont(h);
 }
 
-// Controls inherit their section accent from the enclosing group
-// (groups carry an "accent" ARGB property; default = orange).
+// Controls take their own "accent" property if set (e.g. a teal mod-depth knob
+// inside an orange section), else the enclosing group's; default = orange.
 juce::Colour ErsaLookAndFeel::accentFor(juce::Component& c)
 {
-    juce::Component* start = dynamic_cast<juce::GroupComponent*>(&c) != nullptr
-                             ? &c : c.getParentComponent();
-    for (juce::Component* p = start; p != nullptr; p = p->getParentComponent())
+    for (juce::Component* p = &c; p != nullptr; p = p->getParentComponent())
     {
-        if (auto* g = dynamic_cast<juce::GroupComponent*>(p))
-        {
-            auto v = g->getProperties()["accent"];
-            if (v.isInt())
-                return juce::Colour((juce::uint32)(int)v);
-            return ErsaColors::orange;
-        }
+        auto v = p->getProperties()["accent"];
+        if (v.isInt())
+            return juce::Colour((juce::uint32)(int)v);
     }
     return ErsaColors::orange;
 }
 
-juce::Font ErsaLookAndFeel::getLabelFont(juce::Label&) { return uiFont(12.5f); }
-juce::Font ErsaLookAndFeel::getComboBoxFont(juce::ComboBox&) { return uiFont(13.0f); }
-juce::Font ErsaLookAndFeel::getPopupMenuFont() { return uiFont(13.5f); }
-juce::Font ErsaLookAndFeel::getTextButtonFont(juce::TextButton&, int) { return titleFont(12.5f); }
+// The EFX Grid power glyph: a ring broken at the top with a short stem.
+void ErsaLookAndFeel::drawPower(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour c, bool on)
+{
+    const auto col = on ? c : ErsaColors::faint;
+    const float cx = r.getCentreX(), cy = r.getCentreY();
+    const float rad = juce::jmin(r.getWidth(), r.getHeight()) * 0.5f - 1.0f;
+    g.setColour(col);
+    g.drawEllipse(cx - rad, cy - rad, rad * 2, rad * 2, 1.4f);
+    juce::Path arc;
+    const float ir = rad * 0.52f;
+    arc.addCentredArc(cx, cy, ir, ir, 0.0f, juce::degreesToRadians(35.0f), juce::degreesToRadians(325.0f), true);
+    g.strokePath(arc, juce::PathStrokeType(1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.drawLine(cx, cy - ir - 1.5f, cx, cy - 0.5f, 1.4f);
+}
 
-// ---------------- flat needle knob ----------------
+// The Pastel family mark: four rounded squares.
+void ErsaLookAndFeel::drawLogo(juce::Graphics& g, float x, float y)
+{
+    const juce::uint32 cols[4] = { 0xffe88a8a, 0xff8fd0c2, 0xffe9a3b8, 0xffa9d58e };
+    for (int i = 0; i < 4; ++i)
+    {
+        g.setColour(juce::Colour(cols[i]));
+        g.fillRoundedRectangle(x + (float)(i % 2) * 10.0f, y + (float)(i / 2) * 10.0f, 8.0f, 8.0f, 2.0f);
+    }
+}
+
+juce::Font ErsaLookAndFeel::getLabelFont(juce::Label&) { return uiFont(12.5f); }
+juce::Font ErsaLookAndFeel::getComboBoxFont(juce::ComboBox&) { return titleFont(12.0f); }
+juce::Font ErsaLookAndFeel::getPopupMenuFont() { return uiFont(13.5f); }
+juce::Font ErsaLookAndFeel::getTextButtonFont(juce::TextButton&, int) { return titleFont(12.0f); }
+
+void ErsaLookAndFeel::positionComboBoxText(juce::ComboBox& box, juce::Label& label)
+{
+    label.setBounds(4, 0, box.getWidth() - 22, box.getHeight());
+    label.setFont(getComboBoxFont(box));
+}
+
+// ---------------- arc knob: track, value arc, needle ----------------
+// "bipolar" property: the arc grows from 12 o'clock (centre = off).
 void ErsaLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h,
                                        float pos, float start, float end, juce::Slider& slider)
 {
-    float cx = x + w * 0.5f, cy = y + h * 0.5f;
-    float r = juce::jmin(w, h) * 0.5f - 1.0f;
-    float a = start + pos * (end - start);
+    const float cx = x + w * 0.5f, cy = y + h * 0.5f;
+    const float r = juce::jmin(w, h) * 0.5f - 2.0f;
+    const float a = start + pos * (end - start);
+    const float sw = juce::jmax(2.6f, r * 0.17f);
+    const float arcR = r - sw * 0.5f;
+    const auto accent = ErsaLookAndFeel::accentFor(slider);
+    const auto stroke = juce::PathStrokeType(sw, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
 
-    // flat body + hairline edge
-    float br = r - 5.0f;
+    juce::Path track;
+    track.addCentredArc(cx, cy, arcR, arcR, 0.0f, start, end, true);
+    g.setColour(ErsaColors::edge);
+    g.strokePath(track, stroke);
+
+    const bool bipolar = (bool)slider.getProperties()["bipolar"];
+    const float from = bipolar ? (start + end) * 0.5f : start;
+    if (std::abs(a - from) > 0.01f)
+    {
+        juce::Path val;
+        val.addCentredArc(cx, cy, arcR, arcR, 0.0f, juce::jmin(from, a), juce::jmax(from, a), true);
+        g.setColour(slider.isEnabled() ? accent : ErsaColors::faint);
+        g.strokePath(val, stroke);
+    }
+    // body + needle
+    const float br = r - sw - 1.5f;
     g.setColour(juce::Colour(0xff26292f));
     g.fillEllipse(cx - br, cy - br, br * 2, br * 2);
-    g.setColour(juce::Colour(0xff3a3d43));
-    g.drawEllipse(cx - br + 0.5f, cy - br + 0.5f, br * 2 - 1, br * 2 - 1, 1.0f);
-    // track + value arcs
-    float arcR = r - 1.5f;
-    g.setColour(ErsaColors::track);
-    juce::Path track;
-    track.addArc(cx - arcR, cy - arcR, arcR * 2, arcR * 2, start, end, true);
-    g.strokePath(track, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
-                                             juce::PathStrokeType::butt));
-    if (pos > 0.001f)
-    {
-        g.setColour(ErsaLookAndFeel::accentFor(slider));
-        juce::Path val;
-        val.addArc(cx - arcR, cy - arcR, arcR * 2, arcR * 2, start, a, true);
-        g.strokePath(val, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
-                                               juce::PathStrokeType::butt));
-    }
-    // end ticks
-    g.setColour(ErsaColors::textDim.withAlpha(0.6f));
-    for (float ta : { start, end })
-    {
-        float tx = cx + std::cos(ta - juce::MathConstants<float>::halfPi) * (arcR + 2.5f);
-        float ty = cy + std::sin(ta - juce::MathConstants<float>::halfPi) * (arcR + 2.5f);
-        g.fillEllipse(tx - 1.0f, ty - 1.0f, 2.0f, 2.0f);
-    }
-    // needle
-    float dx = std::cos(a - juce::MathConstants<float>::halfPi);
-    float dy = std::sin(a - juce::MathConstants<float>::halfPi);
-    g.setColour(ErsaLookAndFeel::accentFor(slider));
-    g.drawLine(cx + dx * 2.0f, cy + dy * 2.0f,
-               cx + dx * (br - 2.0f), cy + dy * (br - 2.0f), 2.5f);
+    g.setColour(ErsaColors::edge);
+    g.drawEllipse(cx - br, cy - br, br * 2, br * 2, 1.0f);
+    const float dx = std::sin(a), dy = -std::cos(a);
+    g.setColour(slider.isEnabled() ? ErsaColors::handle : ErsaColors::textDim);
+    g.drawLine(cx + dx * br * 0.25f, cy + dy * br * 0.25f, cx + dx * (br - 2.0f), cy + dy * (br - 2.0f), 2.0f);
 }
 
-// ---------------- mixer-style linear slider ----------------
+// ---------------- thin linear slider (mod depths) ----------------
 void ErsaLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int w, int h,
                                        float pos, float, float,
                                        const juce::Slider::SliderStyle, juce::Slider& s)
 {
-    if (s.isVertical())
+    const auto accent = ErsaLookAndFeel::accentFor(s);
+    const float cy = y + h * 0.5f;
+    const float l = x + 6.0f, rr = (float)(x + w - 6);
+    g.setColour(ErsaColors::track);
+    g.fillRoundedRectangle(l, cy - 2.0f, rr - l, 4.0f, 2.0f);
+    const float px = juce::jlimit(l, rr, pos); // JUCE passes the thumb position in pixels
+    g.setColour(accent);
+    g.fillRoundedRectangle(l, cy - 2.0f, px - l, 4.0f, 2.0f);
+    g.setColour(ErsaColors::handle);
+    g.fillEllipse(px - 6.0f, cy - 6.0f, 12.0f, 12.0f);
+}
+
+// ---------------- toggles: power glyph or pill ----------------
+// "power" property: draw the EFX power glyph (section on/off), else a pill
+// that fills with the accent when on.
+void ErsaLookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleButton& b, bool hover, bool)
+{
+    const bool on = b.getToggleState();
+    const auto accent = ErsaLookAndFeel::accentFor(b);
+    auto r = b.getLocalBounds().toFloat();
+    if ((bool)b.getProperties()["power"])
     {
-        float cx = x + w * 0.5f;
-        float top = y + 4.0f, bot = (float)(y + h - 4);
-        g.setColour(ErsaColors::track);
-        g.fillRoundedRectangle(cx - 1.5f, top, 3.0f, bot - top, 1.5f);
-        float fy = top + (1.0f - pos) * (bot - top);
-        g.setColour(ErsaColors::orange);
-        g.fillRoundedRectangle(cx - 1.5f, fy, 3.0f, bot - fy, 1.5f);
-        // square thumb
-        g.fillRoundedRectangle(cx - 8.0f, fy - 6.0f, 16.0f, 12.0f, 2.0f);
-        g.setColour(ErsaColors::barText.withAlpha(0.85f));
-        g.fillRect(cx - 4.0f, fy - 1.0f, 8.0f, 2.0f);
+        drawPower(g, r.withSizeKeepingCentre(19.0f, 19.0f), accent, on);
+        return;
+    }
+    r = r.reduced(1.0f);
+    const float rad = r.getHeight() * 0.5f;
+    if (on)
+    {
+        g.setColour(accent);
+        g.fillRoundedRectangle(r, rad);
     }
     else
     {
-        float cy = y + h * 0.5f;
-        float l = x + 4.0f, rr = (float)(x + w - 4);
-        g.setColour(ErsaColors::track);
-        g.fillRoundedRectangle(l, cy - 1.5f, rr - l, 3.0f, 1.5f);
-        float fx = l + pos * (rr - l);
-        g.setColour(ErsaColors::orange);
-        g.fillRoundedRectangle(l, cy - 1.5f, fx - l, 3.0f, 1.5f);
-        g.fillRoundedRectangle(fx - 6.0f, cy - 8.0f, 12.0f, 16.0f, 2.0f);
+        g.setColour(hover ? accent.withAlpha(0.8f) : accent.withAlpha(0.55f));
+        g.drawRoundedRectangle(r, rad, 1.2f);
     }
-}
-
-// ---------------- pill switch ----------------
-void ErsaLookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleButton& b, bool, bool)
-{
-    bool on = b.getToggleState();
-    float w = (float)b.getWidth(), h = (float)b.getHeight();
-    float pw = juce::jmin(w - 12.0f, 40.0f), ph = 15.0f;
-    float px = (w - pw) * 0.5f, py = 3.0f;
-    g.setColour(on ? ErsaLookAndFeel::accentFor(b).withAlpha(0.35f) : ErsaColors::track);
-    g.fillRoundedRectangle(px, py, pw, ph, ph * 0.5f);
-    float knobR = ph - 5.0f;
-    float kx = on ? px + pw - knobR - 2.5f : px + 2.5f;
-    g.setColour(on ? ErsaLookAndFeel::accentFor(b) : ErsaColors::textDim);
-    g.fillEllipse(kx, py + 2.5f, knobR, knobR);
-    g.setColour(on ? ErsaColors::text : ErsaColors::textDim);
-    g.setFont(uiFont(12.0f));
-    g.drawText(b.getButtonText(), 0, py + ph + 2.0f, (int)w, (int)(h - py - ph - 2.0f),
-               juce::Justification::centred, true);
+    g.setColour(on ? ErsaColors::barText : accent);
+    g.setFont(titleFont(11.0f));
+    g.drawText(b.getButtonText().toUpperCase(), r, juce::Justification::centred, true);
 }
 
 // ---------------- dropdown ----------------
@@ -154,44 +183,42 @@ void ErsaLookAndFeel::drawComboBox(juce::Graphics& g, int w, int h, bool,
                                    int, int, int, int, juce::ComboBox& box)
 {
     g.setColour(ErsaColors::comboBg);
-    g.fillRoundedRectangle(0, 0, w, h, 4.0f);
-    g.setColour(box.hasKeyboardFocus(true) ? ErsaLookAndFeel::accentFor(box) : juce::Colour(0xff3a3d43));
-    g.drawRoundedRectangle(0.5f, 0.5f, w - 1, h - 1, 4.0f, 1.0f);
+    g.fillRoundedRectangle(0, 0, (float)w, (float)h, 5.0f);
+    g.setColour(box.hasKeyboardFocus(true) ? ErsaLookAndFeel::accentFor(box) : ErsaColors::edge);
+    g.drawRoundedRectangle(0.5f, 0.5f, w - 1.0f, h - 1.0f, 5.0f, 1.0f);
     juce::Path arrow;
-    arrow.addTriangle(w - 16.0f, h * 0.5f - 3, w - 8.0f, h * 0.5f - 3, w - 12.0f, h * 0.5f + 3);
-    g.setColour(ErsaLookAndFeel::accentFor(box));
-    g.fillPath(arrow);
-    juce::ignoreUnused(box);
+    arrow.startNewSubPath(w - 15.0f, h * 0.5f - 2.0f);
+    arrow.lineTo(w - 11.0f, h * 0.5f + 2.0f);
+    arrow.lineTo(w - 7.0f, h * 0.5f - 2.0f);
+    g.setColour(ErsaColors::textDim);
+    g.strokePath(arrow, juce::PathStrokeType(1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
 
-// ---------------- section panel: thin orange border + solid orange bar ----------------
+// ---------------- section panel: neutral edge, accent dot + title ----------------
 void ErsaLookAndFeel::drawGroupComponentOutline(juce::Graphics& g, int w, int h,
                                          const juce::String& text,
                                          const juce::Justification&, juce::GroupComponent& group)
 {
     g.setColour(ErsaColors::panel);
-    g.fillRoundedRectangle(0, 0, w, h, 5.0f);
-    juce::Colour accent = ErsaLookAndFeel::accentFor(group);
-    g.setColour(accent);
-    g.drawRoundedRectangle(0.5f, 0.5f, w - 1, h - 1, 5.0f, 1.0f);
-    const float barH = 24.0f;
-    g.setColour(accent);
-    g.fillRoundedRectangle(1, 1, w - 2, barH, 4.0f);
-    g.fillRect(1, (int)(barH - 5), w - 2, 5); // square off bar bottom
-    g.setColour(ErsaColors::barText);
-    g.setFont(titleFont(14.0f));
-    g.drawText(text.toUpperCase(), 10, 0, w - 12, (int)barH, juce::Justification::centredLeft, false);
+    g.fillRoundedRectangle(0, 0, (float)w, (float)h, 8.0f);
+    g.setColour(ErsaColors::border);
+    g.drawRoundedRectangle(0.5f, 0.5f, w - 1.0f, h - 1.0f, 8.0f, 1.0f);
+    g.setColour(ErsaLookAndFeel::accentFor(group));
+    g.fillEllipse(12.4f, 14.4f, 7.2f, 7.2f);
+    g.setColour(ErsaColors::text);
+    g.setFont(logoFont(13.0f));
+    g.drawText(text.toUpperCase(), 26, 6, w - 60, 24, juce::Justification::centredLeft, true);
 }
 
-// ---------------- dark pill buttons ----------------
+// ---------------- dark buttons ----------------
 void ErsaLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b,
                                            const juce::Colour&, bool hover, bool down)
 {
-    float w = (float)b.getWidth(), h = (float)b.getHeight();
+    const float w = (float)b.getWidth(), h = (float)b.getHeight();
     g.setColour(down ? juce::Colour(0xff2b2e34) : ErsaColors::comboBg);
     g.fillRoundedRectangle(0, 0, w, h, 5.0f);
-    g.setColour(hover || b.hasKeyboardFocus(true) ? ErsaColors::orange : juce::Colour(0xff3a3d43));
-    g.drawRoundedRectangle(0.5f, 0.5f, w - 1, h - 1, 5.0f, hover ? 1.5f : 1.0f);
+    g.setColour(hover || b.hasKeyboardFocus(true) ? ErsaColors::orange.withAlpha(0.8f) : ErsaColors::edge);
+    g.drawRoundedRectangle(0.5f, 0.5f, w - 1, h - 1, 5.0f, 1.0f);
 }
 
 // ---------------- dark popup menu ----------------

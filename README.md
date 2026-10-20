@@ -15,8 +15,8 @@ pitch, PWM from LFO or ENV-1, VCO-2 LOW sub-audio range, LFO delay, MOD lever
 on the mod wheel, hold pedal), envelopes whose times match the knobs, a
 rotating poly arp with gate / swing / played velocity / hold, poly portamento,
 undo / redo, randomize / mutate with section locks, an output meter + scope,
-256 factory presets across eight category banks
-(Bass, Lead, Pad, Orch, Keys, Arp, FX, Classics; editable data files, never
+256 factory presets across seven category banks
+(Bass, Lead, Pad, Orch, Keys, Arp, FX; editable data files, never
 compiled in), user preset save/load, and a full preset browser with search.
 
 ## License

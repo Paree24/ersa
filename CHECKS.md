@@ -83,6 +83,12 @@ starting or modifying a plugin, especially after refactors.
       values (0→1→2→3 cascade); regenerate from an index-based plan instead.
 - [ ] Brace/comma integrity after script edits: re-verify counts programmatically.
 
+- [ ] Linear (through-zero) FM: the modulator must be DC-free. A non-50% pulse
+      carries a DC offset that shifts the carrier's average pitch (Vintage Poly
+      sat ~135 cents flat at X-MOD 0.2). Subtract the waveform's mean.
+- [ ] Factory bank lint: flag oscillator detune > 15 c at equal level and LFO
+      vibrato > ~0.3 st outside sync patches; they read as "out of tune".
+
 ## UI
 
 - [ ] Group bars/knobs: measure alignment from pixels (bar edges, gaps, window
@@ -99,6 +105,9 @@ starting or modifying a plugin, especially after refactors.
 - [ ] No instructional text on the panel; tooltips for non-obvious controls.
 - [ ] Resizable editor = fixed-layout content + scale transform + letterbox.
 - [ ] Harness screenshots: delete the PNG before writing (stale-file confusion).
+- [ ] `SliderAttachment` installs the parameter's own text functions: set a
+      custom `textFromValueFunction` AFTER creating the attachment, or the
+      readouts silently fall back to raw numbers.
 
 ## Tests (headless harness)
 
