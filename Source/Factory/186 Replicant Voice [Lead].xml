@@ -46,7 +46,7 @@
   <PARAM id="phmix" value="0.35"/>
   <PARAM id="phon" value="1.0"/>
   <PARAM id="phrate" value="0.3"/>
-  <PARAM id="porta" value="0.1"/>
+  <PARAM id="porta" value="0.0"/>
   <PARAM id="reso" value="0.7"/>
   <PARAM id="rvdamp" value="0.5"/>
   <PARAM id="rvmix" value="0.25"/>
@@ -74,7 +74,7 @@
   <PARAM id="vco2tune" value="-5.0"/>
   <PARAM id="vco2wave" value="0.0"/>
   <PARAM id="velsens" value="0.4"/>
-  <PARAM id="voicemode" value="2.0"/>
-  <PARAM id="volume" value="1.0448"/>
+  <PARAM id="voicemode" value="0.0"/>
+  <PARAM id="volume" value="0.7844"/>
   <PARAM id="xmod" value="0.0"/>
 </ERSA8>

@@ -367,9 +367,17 @@ public:
         if (p.porta > 0.001f)
         {
             // up to ~2.5 s (squared knob: fine control over short glides)
+            // The RC aims half a semitone PAST the note and stops on it: a plain RC
+            // never arrives, and its tail left slow glides tens of cents flat
+            // for most of the note (heard as pitch drift).
             float c = 1.0f - (float)std::exp(-1.0 / (sampleRate * (0.002 + p.porta * p.porta * 2.5)));
-            curMidi1 += (targetMidi - curMidi1) * c;
-            curMidi2 += (targetMidi - curMidi2) * c;
+            auto slide = [&](float& cur)
+            {
+                const float d = targetMidi - cur;
+                const float step = (d + std::copysign(0.5f, d)) * c;
+                cur = std::abs(step) >= std::abs(d) ? targetMidi : cur + step;
+            };
+            slide(curMidi1); slide(curMidi2);
         }
         else { curMidi1 = targetMidi; curMidi2 = targetMidi; }
 
@@ -563,6 +571,10 @@ public:
     }
 
     void setTarget(float midiWithBend) { targetMidi = midiWithBend; }
+    // poly portamento: where the glide is right now, and restarting a fresh
+    // note's glide from another voice's pitch (the last note played)
+    float glidePitch() const { return curMidi1; }
+    void glideFrom(float midi) { curMidi1 = midi; curMidi2 = midi; }
 
     double sampleRate = 44100.0;
     VoiceFilter vcf;
@@ -580,7 +592,7 @@ private:
     float warmY = 0.0f, warmG = 0.5f;
     double subPh = 0.0;
     float s2Prev[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; // VCO-2 one-sample delay line (sync BLEP)
-    bool hasPlayed = false; // poly portamento glides from the voice's previous note
+    bool hasPlayed = false; // the very first note never glides
     int clickCount = 96; // de-click fade progress (>=96 = idle)
     float lastAmp = 0.0f;
     float gateAmp = 0.0f;    // GATE-mode VCA level (short ramp, follows the key)

@@ -214,6 +214,10 @@ SynthParams Ersa8Processor::collectParams()
         p.mix2 = std::sin(m * juce::MathConstants<float>::halfPi) * 1.3f;
         // per-tap unison detune multipliers, each osc centered on its OWN tap
         // count (linear cents approx, inaudible error) — osc2 mirrored
+        // hard sync: VCO-2 tap u restarts on VCO-1 tap u, so a synced VCO-2 has
+        // no pitch of its own and must use VCO-1's taps. With fewer VCO-2 taps
+        // it locked to VCO-1's outermost (flattest) tap: ~13 cents flat.
+        if (p.sync) p.u2 = p.u1;
         p.tapN = juce::jmax(p.u1, p.u2);
         float spread = 4.0f + getF(P::UIDET) * 46.0f;
         for (int u = 0; u < 4; ++u)
@@ -314,8 +318,12 @@ void Ersa8Processor::handleMidi(const juce::MidiMessage& msg)
             bool anyHeld = !heldNotes.empty();
             updateHeld(n, true);
             bool wasActive = voices[0].active;
-            // glide when sliding between held notes; always re-articulate a fresh attack
-            voices[0].noteOn(n, vel, tmp, wasActive, !anyHeld || !wasActive);
+            // fingered portamento: glide only when sliding from a key still held
+            // (it used to glide into detached notes too, while the last one was
+            // releasing); always re-articulate a fresh attack
+            bool glide = anyHeld && wasActive;
+            if (wasActive && !glide) freezeVoice(0); // snapping pitch: blend, don't step
+            voices[0].noteOn(n, vel, tmp, glide, !anyHeld || !wasActive);
         }
         else if (monoLike)
         {
@@ -334,8 +342,14 @@ void Ersa8Processor::handleMidi(const juce::MidiMessage& msg)
             if (voices[idx].active) freezeVoice(idx); // stealing: blend from old sound
             else stealLeft[idx] = 0;
             voices[idx].age = 0;
-            // poly portamento: each voice slides from the last note it played
-            voices[idx].noteOn(n, vel, tmp, tmp.porta > 0.003f, true);
+            // poly portamento slides from the last note played on ANY voice. Each
+            // voice sliding from its own previous note meant, with rotating
+            // assignment, gliding from a note several notes back (random swoops).
+            const bool polyGlide = tmp.porta > 0.003f && lastPolyVoice >= 0;
+            const float from = polyGlide ? voices[lastPolyVoice].glidePitch() : 0.0f;
+            voices[idx].noteOn(n, vel, tmp, false, true);
+            if (polyGlide) voices[idx].glideFrom(from);
+            lastPolyVoice = idx;
             for (auto& v : voices) v.age++;
         }
     }
@@ -475,7 +489,11 @@ void Ersa8Processor::arpStep(double stepSamples)
         if (voices[(size_t)vi].active) freezeVoice(vi);
         else stealLeft[vi] = 0;
         voices[(size_t)vi].age = 0;
-        voices[(size_t)vi].noteOn(n, vel, p, p.porta > 0.003f, true);
+        const bool polyGlide = p.porta > 0.003f && lastPolyVoice >= 0;
+        const float from = polyGlide ? voices[(size_t)lastPolyVoice].glidePitch() : 0.0f;
+        voices[(size_t)vi].noteOn(n, vel, p, false, true);
+        if (polyGlide) voices[(size_t)vi].glideFrom(from);
+        lastPolyVoice = vi;
         for (auto& v : voices) v.age++;
     }
     voices[(size_t)vi].note = n;

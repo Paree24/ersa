@@ -76,6 +76,65 @@ static int loudnessSurvey()
     return 0;
 }
 
+
+// Lead probe (diagnostic, `ErsaHarness --leadprobe <dir>`): every preset whose
+// file is a lead renders (a) a held C4-E4-G4 chord and (b) a phrase of detached
+// and overlapping notes, dry (FX bypassed) and wet, as raw mono float32 files
+// for offline pitch analysis.
+static int leadProbe(const juce::File& outDir)
+{
+    outDir.createDirectory();
+    const auto& all = getFactoryPresets();
+    for (int pi = 0; pi < (int) all.size(); ++pi)
+    {
+        if (!all[(size_t) pi].file.getFileName().contains("Lead")) continue;
+        for (int scen = 0; scen < 2; ++scen)
+            for (int wet = 0; wet < 2; ++wet)
+            {
+                std::unique_ptr<Ersa8Processor> pq(new Ersa8Processor());
+                pq->setRateAndBufferSizeDetails(44100, 512);
+                pq->prepareToPlay(44100.0, 512);
+                pq->setCurrentProgram(all[(size_t) pi].index);
+                if (!wet) if (auto* fx = pq->apvts.getParameter("fxbypass")) fx->setValueNotifyingHost(1.0f);
+                // events: {time s, note, on}
+                std::vector<std::tuple<double, int, bool>> ev;
+                double len;
+                if (scen == 0) { ev = { {0.0, 60, true}, {0.0, 64, true}, {0.0, 67, true},
+                                         {1.5, 60, false}, {1.5, 64, false}, {1.5, 67, false} }; len = 2.0; }
+                else
+                {
+                    // detached: C4 .4 s, gap .15, E4 .4 s, gap .15, G4 .4; then legato
+                    // G4 -> C5 -> A4 overlapping by 50 ms, each held .6 s
+                    ev = { {0.00, 60, true}, {0.40, 60, false}, {0.55, 64, true}, {0.95, 64, false},
+                           {1.10, 67, true}, {1.65, 72, true}, {1.70, 67, false},
+                           {2.25, 69, true}, {2.30, 72, false}, {3.00, 69, false} };
+                    len = 3.5;
+                }
+                const int nb = (int) std::ceil(len * 44100.0 / 512.0);
+                juce::AudioBuffer<float> b(2, 512); juce::MidiBuffer m;
+                std::vector<float> out; out.reserve((size_t) nb * 512);
+                for (int k = 0; k < nb; ++k)
+                {
+                    m.clear();
+                    for (auto& [t, note, on] : ev)
+                    {
+                        int s = (int) std::round(t * 44100.0) - k * 512;
+                        if (s >= 0 && s < 512)
+                            m.addEvent(on ? juce::MidiMessage::noteOn(1, note, 0.8f)
+                                          : juce::MidiMessage::noteOff(1, note), s);
+                    }
+                    b.clear(); pq->processBlock(b, m);
+                    for (int i = 0; i < 512; ++i) out.push_back(0.5f * (b.getSample(0, i) + b.getSample(1, i)));
+                }
+                auto f = outDir.getChildFile(juce::String(all[(size_t) pi].index).paddedLeft('0', 3)
+                                             + (scen ? "_phrase" : "_chord") + (wet ? "_wet" : "_dry") + ".f32");
+                f.replaceWithData(out.data(), out.size() * sizeof(float));
+            }
+        printf("%d\t%s\n", all[(size_t) pi].index, all[(size_t) pi].file.getFileName().toRawUTF8());
+    }
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     juce::ignoreUnused(argc, argv);
@@ -97,6 +156,7 @@ int main(int argc, char** argv)
         printf("factory dir: %s\n", repoFactory.getFullPathName().toRawUTF8());
     }
     if (argc > 1 && juce::String(argv[1]) == "--loudness") return loudnessSurvey();
+    if (argc > 2 && juce::String(argv[1]) == "--leadprobe") return leadProbe(juce::File(argv[2]));
     printf("--- fresh processor, fx off from boot ---\n");
     {
         std::unique_ptr<Ersa8Processor> p2(new Ersa8Processor());
@@ -1550,7 +1610,11 @@ int main(int argc, char** argv)
         for (int i = 0; i < pp->getNumPrograms(); ++i)
         {
             pp->setCurrentProgram(i);
-            if (i >= 16 && i <= 31)
+            // every lead plays chords (bank 2 [Lead] presets used to be mono)
+            const auto& fp = getFactoryPresets();
+            const bool isLead = (i >= 16 && i <= 31)
+                || (i < (int) fp.size() && fp[(size_t) i].file.getFileName().contains("[Lead]"));
+            if (isLead)
             {
                 if ((int)std::round(raw("voicemode")) != 0)
                 { printf("FAIL: lead %d not poly\n", i); return 1; }

@@ -273,3 +273,26 @@ an octave apart.
 **Avoid:** For every user-facing control, write a probe that proves it
 *does something audible and correct* — "renders finite and doesn't click"
 tests can't catch a dead knob or a wrong note value.
+
+## 24. Leads were mono, glides never landed, sync sat flat
+
+**Issue:** "All factory leads are monophonic and drift in pitch."
+**Root cause:** Four separate things: (a) 16 of 20 bank-2 `[Lead]` presets
+were Mono/Legato, and the "leads poly" policy test only covered 16–31.
+(b) Glide was a plain RC, which never arrives: a 5-semitone legato slide at
+porta 0.3 still sat 20–50 cents flat for most of the next note. (c) Legato
+mode glided into *detached* notes while the previous one was still releasing.
+Poly portamento slid each voice from its own previous note, which with
+rotating voice assignment was several notes back (random swoops). (d) Under
+hard sync, VCO-2 tap u locks to VCO-1 tap u. With fewer VCO-2 taps it
+followed VCO-1's outermost (flattest) tap, about 13 cents flat. Also,
+vibrato on only one VCO beats against the other and reads as detune.
+**Fix:** The RC now aims 0.5 st past the note and stops on it. Legato glides
+only from a held key. Poly glide starts from the last note played on any
+voice. A synced VCO-2 uses VCO-1's tap count. All leads are poly with porta
+0 except Portamento Lead. Vibrato goes to both VCOs, capped at 0.12 with
+≥0.5 s delay. Mono→poly presets were re-levelled to their old survey
+loudness. The policy test now covers every `[Lead]` file.
+**Avoid:** `ErsaHarness --leadprobe <dir>` renders a chord plus a
+detached/legato phrase per lead, for offline pitch tracking. Check chord
+voice count, settle time and steady-state cents, not just "is it finite".

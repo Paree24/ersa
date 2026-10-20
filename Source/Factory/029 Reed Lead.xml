@@ -34,7 +34,7 @@
   <PARAM id="fxbypass" value="0.0"/>
   <PARAM id="hpf" value="2.0"/>
   <PARAM id="keytrk" value="0.7"/>
-  <PARAM id="lfodelay" value="0.0"/>
+  <PARAM id="lfodelay" value="0.5"/>
   <PARAM id="lforate" value="6.0"/>
   <PARAM id="lfovcf" value="0.0"/>
   <PARAM id="lfovco1" value="0.07"/>
@@ -46,7 +46,7 @@
   <PARAM id="phmix" value="0.4"/>
   <PARAM id="phon" value="0.0"/>
   <PARAM id="phrate" value="0.5"/>
-  <PARAM id="porta" value="0.05"/>
+  <PARAM id="porta" value="0.0"/>
   <PARAM id="reso" value="0.5"/>
   <PARAM id="rvdamp" value="0.5"/>
   <PARAM id="rvmix" value="0.12"/>

@@ -46,7 +46,7 @@
   <PARAM id="phmix" value="0.4"/>
   <PARAM id="phon" value="0.0"/>
   <PARAM id="phrate" value="0.5"/>
-  <PARAM id="porta" value="0.05"/>
+  <PARAM id="porta" value="0.0"/>
   <PARAM id="reso" value="0.1"/>
   <PARAM id="rvdamp" value="0.5"/>
   <PARAM id="rvmix" value="0.25"/>

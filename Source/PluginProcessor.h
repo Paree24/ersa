@@ -131,6 +131,7 @@ private:
     bool arpOddStep = false;   // swing: odd steps are the short ones
     float heldVel[128] = {};   // key velocities (arp plays them)
     int nextVoice = 0;         // rotating voice assignment
+    int lastPolyVoice = -1;    // poly portamento source: the voice of the last note played
     // steal crossfade state per voice slot
     float stealBufL[kVoices] = {};
     float stealBufR[kVoices] = {};

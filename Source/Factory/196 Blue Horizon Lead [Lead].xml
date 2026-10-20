@@ -34,11 +34,11 @@
   <PARAM id="fxbypass" value="0.0"/>
   <PARAM id="hpf" value="1.0"/>
   <PARAM id="keytrk" value="0.5"/>
-  <PARAM id="lfodelay" value="0.0"/>
+  <PARAM id="lfodelay" value="0.5"/>
   <PARAM id="lforate" value="4.5"/>
   <PARAM id="lfovcf" value="0.0"/>
   <PARAM id="lfovco1" value="0.08"/>
-  <PARAM id="lfovco2" value="0.0"/>
+  <PARAM id="lfovco2" value="0.08"/>
   <PARAM id="lfowave" value="1.0"/>
   <PARAM id="oscmix" value="0.4"/>
   <PARAM id="phdepth" value="0.5"/>
@@ -46,7 +46,7 @@
   <PARAM id="phmix" value="0.4"/>
   <PARAM id="phon" value="0.0"/>
   <PARAM id="phrate" value="0.5"/>
-  <PARAM id="porta" value="0.15"/>
+  <PARAM id="porta" value="0.0"/>
   <PARAM id="reso" value="0.1"/>
   <PARAM id="rvdamp" value="0.5"/>
   <PARAM id="rvmix" value="0.4"/>
@@ -74,7 +74,7 @@
   <PARAM id="vco2tune" value="4.0"/>
   <PARAM id="vco2wave" value="3.0"/>
   <PARAM id="velsens" value="0.4"/>
-  <PARAM id="voicemode" value="2.0"/>
-  <PARAM id="volume" value="1.2"/>
+  <PARAM id="voicemode" value="0.0"/>
+  <PARAM id="volume" value="0.8623"/>
   <PARAM id="xmod" value="0.0"/>
 </ERSA8>
