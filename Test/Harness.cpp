@@ -18,6 +18,17 @@ static bool isFiniteBuffer(const juce::AudioBuffer<float>& b)
     return true;
 }
 
+// fake DAW transport: playing at a fixed tempo, position set per block
+struct FakePlayHead : juce::AudioPlayHead
+{
+    double bpm = 120.0, ppq = 0.0; bool playing = true;
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo p; p.setBpm(bpm); p.setPpqPosition(ppq); p.setIsPlaying(playing);
+        return p;
+    }
+};
+
 static float peakAbs(const juce::AudioBuffer<float>& b)
 {
     float p = 0.0f;
@@ -374,6 +385,47 @@ int main(int argc, char** argv)
             printf("arp: %d gaps, soft/loud rms %.3f\n", gaps, rms(soft) / rms(loud));
             CHECK(gaps >= 8, "arp gate shortens every step");
             CHECK(rms(soft) < 0.7 * rms(loud), "arp plays the keys' velocity");
+        }
+        // host-synced arp: steps land on the DAW's 1/16 grid even when the
+        // transport starts mid-beat (it used to free-run from the first block)
+        {
+            auto q = make();
+            set(*q, P::ARP_ON, 1.0f); set(*q, P::ARP_DIV, 10); set(*q, P::ARP_GATE, 0.4f); set(*q, P::AR, 0.01f);
+            FakePlayHead ph; ph.ppq = 0.4; // 8820 samples before beat 1 @ 120 BPM / 44.1k
+            q->setPlayHead(&ph);
+            std::vector<float> mono;
+            juce::AudioBuffer<float> b(2, 512);
+            for (int k = 0; k < 160; ++k)
+            {
+                juce::MidiBuffer m;
+                if (k == 0) { m.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); m.addEvent(juce::MidiMessage::noteOn(1, 67, 0.8f), 0); }
+                b.clear(); q->processBlock(b, m);
+                for (int i = 0; i < 512; ++i) mono.push_back(0.5f * (b.getSample(0, i) + b.getSample(1, i)));
+                ph.ppq += 512.0 * 2.0 / 44100.0;
+            }
+            q->setPlayHead(nullptr);
+            // onsets: first audible sample after a quiet stretch that grows into
+            // a real attack (low release-tail wiggles don't count as notes)
+            std::vector<int> on; int quietRun = 1000;
+            for (int i = 0; i < (int) mono.size(); ++i)
+            {
+                if (std::abs(mono[(size_t) i]) <= 1e-3f) { ++quietRun; continue; }
+                float ahead = 0.0f;
+                for (int j = i; j < juce::jmin((int) mono.size(), i + 300); ++j) ahead = juce::jmax(ahead, std::abs(mono[(size_t) j]));
+                if (quietRun > 200 && ahead > 0.03f) on.push_back(i);
+                quietRun = 0;
+            }
+            // grid step k (16ths from song start) sits at k*5512.5 - 8820 samples
+            int bad = 0;
+            for (int o : on)
+            {
+                const double k = std::round((o + 8820.0) / 5512.5);
+                const double off = o - (k * 5512.5 - 8820.0);
+                if (off < -1.0 || off > 150.0) { ++bad; printf("  off-grid onset %d (step %.0f, %+.0f)\n", o, k, off); }
+            }
+            printf("synced arp: %d onsets, first at %d (grid 2205), %d off-grid\n", (int) on.size(), on.empty() ? -1 : on[0], bad);
+            CHECK(on.size() >= 12 && bad == 0, "arp steps lock to the host grid");
+            CHECK(!on.empty() && on[0] > 2000, "a key hit mid-step waits for the next grid step");
         }
         // legacy state: v1 envelope / LFO / glide values keep their sound
         {

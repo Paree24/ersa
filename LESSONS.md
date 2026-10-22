@@ -296,3 +296,23 @@ loudness. The policy test now covers every `[Lead]` file.
 **Avoid:** `ErsaHarness --leadprobe <dir>` renders a chord plus a
 detached/legato phrase per lead, for offline pitch tracking. Check chord
 voice count, settle time and steady-state cents, not just "is it finite".
+
+## 25. Arp drifted against the DAW
+
+**Issue:** "ERSA's arp is broken and is out of sync with the DAW."
+**Root cause:** The arp clock was a free-running sample countdown. It read
+only the host BPM and never its beat position, so steps fell at an arbitrary
+phase against the bar. The first key waited a random fraction of a step. The
+pattern resumed from a stale step index, and the swing long/short phase
+wandered. Division multipliers were rounded floats (0.3333), which would
+drift once derived from song position.
+**Fix:** While the transport plays, each step is a slot on the host grid
+(`ppq × steps-per-beat`; swing moves odd slots to 1+swing). A step fires when
+the slot number changes. Starting the transport, enabling the arp or changing
+the division joins the grid without an off-beat step. A loop or rewind restarts
+the pattern. A fresh phrase starts at step 0, and a key hit up to ¼ step late
+plays at once. Stopped transport free-runs from the first key. Divisions use
+exact fractions.
+**Avoid:** Anything tempo-synced in a plugin must follow the host's ppq
+position, not just its BPM. The harness drives a `FakePlayHead` that starts
+mid-beat and asserts every onset sits on the grid.

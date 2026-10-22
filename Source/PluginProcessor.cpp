@@ -184,6 +184,7 @@ void Ersa8Processor::prepareToPlay(double sampleRate, int samplesPerBlock)
     mixR.assign((size_t)juce::jmax(1, samplesPerBlock), 0.0f);
     lastEqLow = lastEqHigh = 1.0e9f; // force first coefficient update
     arpSamplesToNext = 0.0;
+    arpSynced = false;
     // snap smoothers to current values so the first block is already settled
     SynthParams d0 = collectParams();
     smCut = d0.cutoff; smRes = d0.reso; smL1 = d0.vco1level; smL2 = d0.vco2level;
@@ -312,7 +313,12 @@ void Ersa8Processor::handleMidi(const juce::MidiMessage& msg)
         bool anyGated = false;
         for (auto& v : voices) if (v.active && !v.isReleasing()) { anyGated = true; break; }
         if (!anyGated && heldNotes.empty()) lfo.noteOn();
-        if (arpOn) { updateHeld(n, true); }
+        if (arpOn)
+        {
+            // a fresh phrase starts the pattern from its first step
+            if (heldNotes.empty()) { arpPhraseStart = true; arpStepIdx = 0; }
+            updateHeld(n, true);
+        }
         else if (tmp.voiceMode == 2) // legato
         {
             bool anyHeld = !heldNotes.empty();
@@ -511,9 +517,14 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     // UI-thread requests are executed here, on the audio thread (no data race)
     if (panicRequest.exchange(false)) doPanic();
     if (initRequest.exchange(false)) doInitReset();
+    bool hostPlaying = false; double ppqStart = 0.0;
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
+        {
             if (pos->getBpm()) hostBpm = *pos->getBpm();
+            if (pos->getIsPlaying() && pos->getBpm())
+                if (auto ppq = pos->getPpqPosition()) { hostPlaying = true; ppqStart = *ppq; }
+        }
     SynthParams p = collectParams(); // after the tempo read: synced LFO rate
 
     bool arpOn = apvts.getRawParameterValue(P::ARP_ON)->load() > 0.5f;
@@ -521,8 +532,10 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     // host-synced divisions: steps per beat (straight, triplet, dotted),
     // sorted slow -> fast. NOTE: this order was resorted after release;
     // factory XMLs were migrated old->new, see commit.
-    static constexpr float divMult[13] = { 0.3333f, 0.5f, 0.6667f, 0.75f, 1.0f, 1.3333f, 1.5f,
-                                           2.0f, 2.6667f, 3.0f, 4.0f, 6.0f, 8.0f };
+    // (exact fractions: the grid is derived from the host's beat position, so
+    // 0.3333 instead of 1/3 would drift off the bar over a long song)
+    static constexpr double divMult[13] = { 1.0 / 3.0, 0.5, 2.0 / 3.0, 0.75, 1.0, 4.0 / 3.0, 1.5,
+                                            2.0, 8.0 / 3.0, 3.0, 4.0, 6.0, 8.0 };
     int arpDiv = juce::jlimit(0, 12, (int)std::round(apvts.getRawParameterValue(P::ARP_DIV)->load()));
 
     // unlatch: releasing HOLD (or switching arp off) clears latched notes
@@ -559,6 +572,36 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     double arpCountdown = arpSamplesToNext; // fractional: no tempo drift from rounding
+    // arp clock. Transport playing: steps sit on the host grid (beat 0 = song
+    // start), so the arp stays locked to the DAW through tempo changes, loops
+    // and seeks. Stopped: free-runs at host tempo, starting on the first key.
+    const double arpSwing = apvts.getRawParameterValue(P::ARP_SWING)->load();
+    const double arpStepLen = cachedSr / std::max(0.1, (hostBpm / 60.0) * divMult[arpDiv]); // samples per straight step
+    const double stepsPerSample = (hostBpm / 60.0) * divMult[arpDiv] / cachedSr;
+    const bool arpGrid = arpOn && hostPlaying;
+    // grid position (in straight steps) -> swung slot. Swing delays every
+    // second step: pairs are long (1+swing) then short (1-swing).
+    struct ArpSlot { juce::int64 slot; double into, len; }; // into/len in steps
+    auto slotAt = [arpSwing](double x)
+    {
+        x += 1.0e-7; // a note stamped exactly on the beat must land on its step
+        const double pair = std::floor(x * 0.5), ph = x - 2.0 * pair;
+        const bool odd = ph >= 1.0 + arpSwing;
+        return ArpSlot { (juce::int64) pair * 2 + (odd ? 1 : 0),
+                         odd ? ph - (1.0 + arpSwing) : ph,
+                         odd ? 1.0 - arpSwing : 1.0 + arpSwing };
+    };
+    if (arpGrid && (!arpSynced || arpSlotDiv != arpDiv))
+    {
+        // transport just started, arp switched on or division changed (slots
+        // renumbered): join the grid without
+        // firing an off-beat step, unless we start exactly on a step
+        const auto a = slotAt(ppqStart * divMult[arpDiv]);
+        arpSlot = a.into < 1.0e-4 ? a.slot - 1 : a.slot;
+        if (!arpSynced) arpStepIdx = 0;
+        arpSlotDiv = arpDiv;
+    }
+    arpSynced = arpGrid;
 
     // per-sample smoothing coeffs (~8 ms) for click/zipper-prone params
     float smK = 1.0f - std::exp(-1.0f / (0.008f * (float)cachedSr));
@@ -583,21 +626,40 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
         // '<=' (not '=='): an out-of-order/negative timestamp can't stall the queue
         while (midiIt != midiEnd && (*midiIt).samplePosition <= s) { handleMidi((*midiIt).getMessage()); ++midiIt; }
 
-        if (arpOn)
+        if (arpGrid)
         {
+            const auto a = slotAt((ppqStart * divMult[arpDiv]) + s * stepsPerSample);
+            if (a.slot != arpSlot)
+            {
+                if (a.slot < arpSlot) arpStepIdx = 0; // loop / rewind: replay the pattern from the top
+                arpSlot = a.slot;
+                arpPhraseStart = false;
+                arpStep(a.len * arpStepLen);
+            }
+            else if (arpPhraseStart)
+            {
+                // key hit just after the step (live playing, humanised clip):
+                // play it now instead of a whole step late; later hits wait
+                arpPhraseStart = false;
+                if (a.into < 0.25) arpStep((a.len - a.into) * arpStepLen);
+            }
+        }
+        else if (arpOn)
+        {
+            if (arpPhraseStart) { arpPhraseStart = false; arpCountdown = 0.0; arpOddStep = false; }
             if (arpCountdown <= 0.0)
             {
                 // swing: every second step starts late (long-short pairs)
-                double stepsPerSec = (hostBpm / 60.0) * (double)divMult[arpDiv];
-                double stepLen = cachedSr / std::max(0.1, stepsPerSec);
-                const double swing = apvts.getRawParameterValue(P::ARP_SWING)->load();
-                stepLen *= arpOddStep ? (1.0 - swing) : (1.0 + swing);
+                double stepLen = arpStepLen * (arpOddStep ? (1.0 - arpSwing) : (1.0 + arpSwing));
                 arpOddStep = !arpOddStep;
                 arpStep(stepLen);
                 arpCountdown += stepLen;
                 if (arpCountdown <= 0.0) arpCountdown = 1.0;
             }
             arpCountdown -= 1.0;
+        }
+        if (arpOn)
+        {
             if (arpGateLeft > 0.0 && (arpGateLeft -= 1.0) <= 0.0) arpRelease();
         }
 
@@ -644,6 +706,13 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
         }
         // refresh per-sample-varying params cheaply
         for (auto& v : voices) if (v.active) v.setTarget((float)v.note + p.tune / 100.0f);
+    }
+    if (arpGrid)
+    {
+        // transport may stop next block: free-run on from where the grid left off
+        const auto a = slotAt((ppqStart * divMult[arpDiv]) + numSamples * stepsPerSample);
+        arpCountdown = (a.len - a.into) * arpStepLen;
+        arpOddStep = (a.slot & 1) == 0; // next step is the short one after a long one
     }
     arpSamplesToNext = arpCountdown;
     // events stamped at/after the block end (out-of-spec hosts) still land:
@@ -893,7 +962,7 @@ void Ersa8Processor::doPanic()
     clearKeyState(); modLever = modLeverSm = 0.0f;
     bendSemis = 0.0f; bendSm = 0.0f;
     for (auto& v : voices) v.kill();
-    arpNoteActive = false; arpCurrentNote = -1; arpStepIdx = 0; arpSamplesToNext = 0.0;
+    arpNoteActive = false; arpCurrentNote = -1; arpStepIdx = 0; arpSamplesToNext = 0.0; arpSynced = false; arpPhraseStart = false;
     for (int i = 0; i < kVoices; ++i) stealLeft[i] = 0;
     delay.clear(); reverb.clear(); sat.reset(); chorus.clear(); phaser.clear();
     lowShelf.reset(); highShelf.reset(); subHP.reset(); subHP2.reset();
