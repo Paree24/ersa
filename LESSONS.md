@@ -306,13 +306,17 @@ phase against the bar. The first key waited a random fraction of a step. The
 pattern resumed from a stale step index, and the swing long/short phase
 wandered. Division multipliers were rounded floats (0.3333), which would
 drift once derived from song position.
-**Fix:** While the transport plays, each step is a slot on the host grid
-(`ppq × steps-per-beat`; swing moves odd slots to 1+swing). A step fires when
-the slot number changes. Starting the transport, enabling the arp or changing
-the division joins the grid without an off-beat step. A loop or rewind restarts
-the pattern. A fresh phrase starts at step 0, and a key hit up to ¼ step late
-plays at once. Stopped transport free-runs from the first key. Divisions use
-exact fractions.
+**Fix:** While the transport plays, steps are counted in host beats from the
+phrase's first key (the anchor), so they follow the DAW through tempo changes
+and never drift. Swing moves odd steps to 1+swing. Step 0 sounds on the key.
+Starting the transport, enabling the arp or a loop/seek jump re-anchors there;
+a division change rejoins without an extra step. Stopped transport free-runs
+from the first key. Divisions use exact fractions.
+A first attempt anchored steps to song beat 0. That is fine for straight
+rates, but dotted ones (0.75 beats) then started between beats on any bar not
+a multiple of 3 beats in. Even dotted steps only meet a bar line every 3 bars
+(3 against 4); that is correct, not drift.
 **Avoid:** Anything tempo-synced in a plugin must follow the host's ppq
-position, not just its BPM. The harness drives a `FakePlayHead` that starts
-mid-beat and asserts every onset sits on the grid.
+position, not just its BPM. The harness drives a `FakePlayHead` (1/16 mid-beat, 1/8D
+from bar 2) and asserts even steps from the key; `ErsaHarness --arpprobe
+<div> <startPpq>` prints onsets in 16ths.

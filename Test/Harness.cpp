@@ -146,6 +146,53 @@ static int leadProbe(const juce::File& outDir)
     return 0;
 }
 
+// Arp probe (diagnostic, `ErsaHarness --arpprobe <div> <startPpq> [noteAtPpq]`): the
+// Init patch arpeggiates one key against a fake transport at 120 BPM; prints each
+// audible onset as a song position in 16ths (a 1/8D arp should step every 3).
+static int arpProbe(int div, double startPpq, double noteAt)
+{
+    juce::MessageManager::getInstance();
+    std::unique_ptr<Ersa8Processor> q(new Ersa8Processor());
+    q->setRateAndBufferSizeDetails(44100, 512);
+    q->prepareToPlay(44100.0, 512);
+    q->loadInit();
+    juce::AudioBuffer<float> b(2, 512); juce::MidiBuffer m0; q->processBlock(b, m0);
+    auto set = [&](const char* id, float plain) { auto* prm = q->apvts.getParameter(id); prm->setValueNotifyingHost(prm->convertTo0to1(plain)); };
+    for (auto id : { "chon", "phon", "dlon", "rvon", "ston" }) set(id, 0.0f);
+    set(P::ARP_ON, 1.0f); set(P::ARP_DIV, (float) div); set(P::ARP_GATE, 0.4f); set(P::AR, 0.01f);
+    FakePlayHead ph; ph.ppq = startPpq;
+    q->setPlayHead(&ph);
+    const double spb = 22050.0; // samples per beat @ 120
+    std::vector<float> mono;
+    bool sent = false;
+    for (int k = 0; k < 400; ++k)
+    {
+        juce::MidiBuffer m;
+        const double blockEnd = ph.ppq + 512.0 / spb;
+        if (!sent && noteAt < blockEnd)
+        {
+            m.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), juce::jlimit(0, 511, (int) std::round((noteAt - ph.ppq) * spb)));
+            sent = true;
+        }
+        b.clear(); q->processBlock(b, m);
+        for (int i = 0; i < 512; ++i) mono.push_back(0.5f * (b.getSample(0, i) + b.getSample(1, i)));
+        ph.ppq = blockEnd;
+    }
+    q->setPlayHead(nullptr);
+    int quiet = 1000;
+    printf("div %d, transport from beat %.3f, key at beat %.3f; onsets in 16ths:\n", div, startPpq, noteAt);
+    for (int i = 0; i < (int) mono.size(); ++i)
+    {
+        if (std::abs(mono[(size_t) i]) <= 1e-3f) { ++quiet; continue; }
+        float ahead = 0.0f;
+        for (int j = i; j < juce::jmin((int) mono.size(), i + 300); ++j) ahead = juce::jmax(ahead, std::abs(mono[(size_t) j]));
+        if (quiet > 200 && ahead > 0.03f) printf("  %.2f", (startPpq + i / spb) * 4.0);
+        quiet = 0;
+    }
+    printf("\n");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     juce::ignoreUnused(argc, argv);
@@ -167,6 +214,7 @@ int main(int argc, char** argv)
         printf("factory dir: %s\n", repoFactory.getFullPathName().toRawUTF8());
     }
     if (argc > 1 && juce::String(argv[1]) == "--loudness") return loudnessSurvey();
+    if (argc > 3 && juce::String(argv[1]) == "--arpprobe") return arpProbe(juce::String(argv[2]).getIntValue(), juce::String(argv[3]).getDoubleValue(), argc > 4 ? juce::String(argv[4]).getDoubleValue() : juce::String(argv[3]).getDoubleValue());
     if (argc > 2 && juce::String(argv[1]) == "--leadprobe") return leadProbe(juce::File(argv[2]));
     printf("--- fresh processor, fx off from boot ---\n");
     {
@@ -386,19 +434,22 @@ int main(int argc, char** argv)
             CHECK(gaps >= 8, "arp gate shortens every step");
             CHECK(rms(soft) < 0.7 * rms(loud), "arp plays the keys' velocity");
         }
-        // host-synced arp: steps land on the DAW's 1/16 grid even when the
-        // transport starts mid-beat (it used to free-run from the first block)
+        // host-synced arp: steps are counted in host beats from the phrase's
+        // first key, so a 1/8D phrase on bar 2 steps every 3 sixteenths from
+        // there (it used to free-run, then sat on a song-start lattice)
+        for (auto [div, startBeat, stepSamples] : { std::tuple<int, double, double> { 10, 0.4, 5512.5 },
+                                                    std::tuple<int, double, double> { 5, 4.0, 16537.5 } })
         {
             auto q = make();
-            set(*q, P::ARP_ON, 1.0f); set(*q, P::ARP_DIV, 10); set(*q, P::ARP_GATE, 0.4f); set(*q, P::AR, 0.01f);
-            FakePlayHead ph; ph.ppq = 0.4; // 8820 samples before beat 1 @ 120 BPM / 44.1k
+            set(*q, P::ARP_ON, 1.0f); set(*q, P::ARP_DIV, (float) div); set(*q, P::ARP_GATE, 0.4f); set(*q, P::AR, 0.01f);
+            FakePlayHead ph; ph.ppq = startBeat;
             q->setPlayHead(&ph);
             std::vector<float> mono;
             juce::AudioBuffer<float> b(2, 512);
-            for (int k = 0; k < 160; ++k)
+            for (int k = 0; k < 400; ++k)
             {
                 juce::MidiBuffer m;
-                if (k == 0) { m.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0); m.addEvent(juce::MidiMessage::noteOn(1, 67, 0.8f), 0); }
+                if (k == 0) m.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 0);
                 b.clear(); q->processBlock(b, m);
                 for (int i = 0; i < 512; ++i) mono.push_back(0.5f * (b.getSample(0, i) + b.getSample(1, i)));
                 ph.ppq += 512.0 * 2.0 / 44100.0;
@@ -415,17 +466,17 @@ int main(int argc, char** argv)
                 if (quietRun > 200 && ahead > 0.03f) on.push_back(i);
                 quietRun = 0;
             }
-            // grid step k (16ths from song start) sits at k*5512.5 - 8820 samples
+            // step k sits at k * stepSamples after the key: evenly spaced, no drift
             int bad = 0;
             for (int o : on)
             {
-                const double k = std::round((o + 8820.0) / 5512.5);
-                const double off = o - (k * 5512.5 - 8820.0);
+                const double k = std::round(o / stepSamples);
+                const double off = o - k * stepSamples;
                 if (off < -1.0 || off > 150.0) { ++bad; printf("  off-grid onset %d (step %.0f, %+.0f)\n", o, k, off); }
             }
-            printf("synced arp: %d onsets, first at %d (grid 2205), %d off-grid\n", (int) on.size(), on.empty() ? -1 : on[0], bad);
-            CHECK(on.size() >= 12 && bad == 0, "arp steps lock to the host grid");
-            CHECK(!on.empty() && on[0] > 2000, "a key hit mid-step waits for the next grid step");
+            printf("synced arp div %d: %d onsets, first at %d, %d off-grid\n", div, (int) on.size(), on.empty() ? -1 : on[0], bad);
+            CHECK(on.size() >= 12 && bad == 0, "synced arp steps evenly from the key, locked to host beats");
+            CHECK(!on.empty() && on[0] < 150, "synced arp's first step sounds on the key");
         }
         // legacy state: v1 envelope / LFO / glide values keep their sound
         {

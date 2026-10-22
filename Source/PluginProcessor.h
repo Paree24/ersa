@@ -130,10 +130,12 @@ private:
     double arpGateLeft = 0.0;  // samples until the step's gate ends (0 = runs to the next step)
     bool arpOddStep = false;   // swing: odd steps are the short ones
     // host sync: while the transport plays, steps come from the DAW's beat
-    // position (slot = step number on the song grid), not a free counter
+    // position (slot = step number counted from the phrase anchor), not a free counter
     juce::int64 arpSlot = 0;
     bool arpSynced = false;      // the previous block ran on the host grid
     int arpSlotDiv = -1;         // division the slot numbers were counted in
+    double arpAnchor = 0.0;      // host beat the pattern's step 0 sits on (phrase start)
+    double arpExpectPpq = 0.0;   // where this block should start if the transport ran on
     bool arpPhraseStart = false; // first key of a phrase: (re)start the pattern
     float heldVel[128] = {};   // key velocities (arp plays them)
     int nextVoice = 0;         // rotating voice assignment

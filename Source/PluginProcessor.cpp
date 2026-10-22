@@ -572,12 +572,14 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     double arpCountdown = arpSamplesToNext; // fractional: no tempo drift from rounding
-    // arp clock. Transport playing: steps sit on the host grid (beat 0 = song
-    // start), so the arp stays locked to the DAW through tempo changes, loops
-    // and seeks. Stopped: free-runs at host tempo, starting on the first key.
+    // arp clock. Transport playing: steps are counted in host beats from the
+    // phrase's first key (the anchor), so they stay locked to the DAW through
+    // tempo changes. Anchoring to the phrase, not song beat 0, keeps dotted /
+    // triplet rates starting on the bar the clip starts on. Stopped: free-runs
+    // at host tempo, starting on the first key.
     const double arpSwing = apvts.getRawParameterValue(P::ARP_SWING)->load();
     const double arpStepLen = cachedSr / std::max(0.1, (hostBpm / 60.0) * divMult[arpDiv]); // samples per straight step
-    const double stepsPerSample = (hostBpm / 60.0) * divMult[arpDiv] / cachedSr;
+    const double beatsPerSample = hostBpm / 60.0 / cachedSr;
     const bool arpGrid = arpOn && hostPlaying;
     // grid position (in straight steps) -> swung slot. Swing delays every
     // second step: pairs are long (1+swing) then short (1-swing).
@@ -591,17 +593,25 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
                          odd ? ph - (1.0 + arpSwing) : ph,
                          odd ? 1.0 - arpSwing : 1.0 + arpSwing };
     };
-    if (arpGrid && (!arpSynced || arpSlotDiv != arpDiv))
+    auto stepsAt = [&](double beat) { return (beat - arpAnchor) * divMult[arpDiv]; };
+    if (arpGrid && (!arpSynced || std::abs(ppqStart - arpExpectPpq) > 1.0e-3))
     {
-        // transport just started, arp switched on or division changed (slots
-        // renumbered): join the grid without
-        // firing an off-beat step, unless we start exactly on a step
-        const auto a = slotAt(ppqStart * divMult[arpDiv]);
+        // transport started, arp switched on, or a loop / seek jump: the
+        // pattern restarts right here (step 0 now)
+        arpAnchor = ppqStart;
+        arpSlot = -1;
+        arpStepIdx = 0;
+        arpSlotDiv = arpDiv;
+    }
+    else if (arpGrid && arpSlotDiv != arpDiv)
+    {
+        // division changed (slots renumbered): rejoin without an extra step
+        const auto a = slotAt(stepsAt(ppqStart));
         arpSlot = a.into < 1.0e-4 ? a.slot - 1 : a.slot;
-        if (!arpSynced) arpStepIdx = 0;
         arpSlotDiv = arpDiv;
     }
     arpSynced = arpGrid;
+    arpExpectPpq = ppqStart + numSamples * beatsPerSample;
 
     // per-sample smoothing coeffs (~8 ms) for click/zipper-prone params
     float smK = 1.0f - std::exp(-1.0f / (0.008f * (float)cachedSr));
@@ -628,20 +638,14 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
         if (arpGrid)
         {
-            const auto a = slotAt((ppqStart * divMult[arpDiv]) + s * stepsPerSample);
+            const double beat = ppqStart + s * beatsPerSample;
+            // first key of a phrase: step 0 sounds on it, the rest follow in beats
+            if (arpPhraseStart) { arpPhraseStart = false; arpAnchor = beat; arpSlot = -1; }
+            const auto a = slotAt(stepsAt(beat));
             if (a.slot != arpSlot)
             {
-                if (a.slot < arpSlot) arpStepIdx = 0; // loop / rewind: replay the pattern from the top
                 arpSlot = a.slot;
-                arpPhraseStart = false;
                 arpStep(a.len * arpStepLen);
-            }
-            else if (arpPhraseStart)
-            {
-                // key hit just after the step (live playing, humanised clip):
-                // play it now instead of a whole step late; later hits wait
-                arpPhraseStart = false;
-                if (a.into < 0.25) arpStep((a.len - a.into) * arpStepLen);
             }
         }
         else if (arpOn)
@@ -710,7 +714,7 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     if (arpGrid)
     {
         // transport may stop next block: free-run on from where the grid left off
-        const auto a = slotAt((ppqStart * divMult[arpDiv]) + numSamples * stepsPerSample);
+        const auto a = slotAt(stepsAt(arpExpectPpq));
         arpCountdown = (a.len - a.into) * arpStepLen;
         arpOddStep = (a.slot & 1) == 0; // next step is the short one after a long one
     }

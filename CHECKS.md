@@ -68,8 +68,9 @@ starting or modifying a plugin, especially after refactors.
 - [ ] Velocity-0 noteOn counts as noteOff (JUCE defaults handle it — verify).
 - [ ] Voice-mode switches must release hanging voices (else stuck notes).
 - [ ] Arp hold must unlatch on hold-off AND on arp-off (transition detection).
-- [ ] Arp follows the host ppq position while playing (not just BPM): steps on
-      the bar grid, rejoin on transport start / loop / division change.
+- [ ] Arp follows the host ppq position while playing (not just BPM), counted
+      from the phrase's first key (dotted rates!); re-anchor on transport start /
+      loop jump, rejoin on division change.
 - [ ] Sustain pedal explicitly supported or explicitly ignored (document it).
 
 ## Presets (data, never code)
