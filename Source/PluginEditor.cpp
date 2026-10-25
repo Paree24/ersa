@@ -28,7 +28,7 @@ static juce::String ersaFormat(const juce::String& id, float v)
 
 
 ErsaContent::ErsaContent(Ersa8Processor& p)
-    : proc(p)
+    : proc(p), midiBtn(p.midiLearn)
 {
     setLookAndFeel(&lnf);
     pastel::Theme::format = ersaFormat;
@@ -57,13 +57,14 @@ ErsaContent::ErsaContent(Ersa8Processor& p)
     panicBtn.setColour(juce::TextButton::textColourOnId, ErsaColors::red);
     panicBtn.setColour(juce::TextButton::textColourOffId, ErsaColors::red);
     // edit history + randomize
-    for (auto* b : { &undoBtn, &redoBtn, &randBtn, &mutateBtn, &locksBtn })
+    for (auto* b : { &undoBtn, &redoBtn, &randBtn, &mutateBtn, &locksBtn, static_cast<juce::TextButton*>(&midiBtn) })
     {
         addAndMakeVisible(b);
         b->setColour(juce::TextButton::buttonColourId, ErsaColors::comboBg);
         b->setColour(juce::TextButton::textColourOnId, ErsaColors::text);
         b->setColour(juce::TextButton::textColourOffId, ErsaColors::text);
     }
+    midiBtn.setColour(juce::TextButton::buttonOnColourId, ErsaColors::orange.withAlpha(0.45f));
     undoBtn.onClick = [&] { proc.undoEdit(); refreshPresetName(); };
     redoBtn.onClick = [&] { proc.redoEdit(); refreshPresetName(); };
     randBtn.onClick = [&] { proc.randomize(); presetBtn.setButtonText("Random"); };
@@ -252,6 +253,7 @@ ErsaContent::ErsaContent(Ersa8Processor& p)
         else
             refreshPresetName();
     };
+    shownProgram = proc.getCurrentProgram();
 }
 
 ErsaContent::~ErsaContent() { setLookAndFeel(nullptr); }
@@ -395,6 +397,11 @@ void ErsaContent::timerCallback()
 {
     undoBtn.setEnabled(proc.canUndo());
     redoBtn.setEnabled(proc.canRedo());
+    if (proc.getCurrentProgram() != shownProgram)
+    {
+        shownProgram = proc.getCurrentProgram();
+        refreshPresetName();
+    }
 }
 
 OutputScope::OutputScope(Ersa8Processor& p) : proc(p) { startTimerHz(30); }
@@ -465,6 +472,7 @@ void ErsaContent::resized()
 {
     undoBtn.setBounds(288, 12, 28, 28);
     redoBtn.setBounds(320, 12, 28, 28);
+    midiBtn.setBounds(358, 12, 76, 28);
     prevBtn.setBounds(444, 12, 28, 28);
     presetBtn.setBounds(476, 12, 288, 28);
     nextBtn.setBounds(768, 12, 28, 28);

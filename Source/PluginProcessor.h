@@ -5,6 +5,7 @@
 #include "DSPEngine.h"
 #include "Presets.h"
 #include "SnapshotUndo.h"
+#include "MidiLearn.h"
 
 class Ersa8Processor : public juce::AudioProcessor
 {
@@ -35,6 +36,7 @@ public:
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState apvts;
+    pastel::MidiLearn midiLearn { *this, "ERSA" }; // global CC map + preset knob
     void loadPreset(int index);
     void loadInit(); // neutral starting point (all defaults), keeps program number
     void panic();    // all-silence: kills voices, latch, FX tails (applied at the next audio block)

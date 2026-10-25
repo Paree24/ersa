@@ -142,6 +142,11 @@ Ersa8Processor::Ersa8Processor()
     arpNotes.reserve(128 * 4);
     heldNotes.reserve(128);
     loadPreset(0); // boot to preset 000, not the init patch (state restore overrides after)
+    midiLearn.onPresetStep = [this](int delta)
+    {
+        int n = juce::jmax(1, getNumPrograms());
+        loadPreset(((currentPreset + delta) % n + n) % n);
+    };
     undo = std::make_unique<SnapshotUndo>(*this,
         [this] { auto st = apvts.copyState(); st.setProperty("prog", currentPreset, nullptr); return st; },
         [this](const juce::ValueTree& st)
@@ -517,6 +522,7 @@ void Ersa8Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     // UI-thread requests are executed here, on the audio thread (no data race)
     if (panicRequest.exchange(false)) doPanic();
     if (initRequest.exchange(false)) doInitReset();
+    midiLearn.process(midi); // learned CCs land before this block renders
     bool hostPlaying = false; double ppqStart = 0.0;
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())

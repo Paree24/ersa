@@ -4,6 +4,7 @@
 #include "ErsaLookAndFeel.h"
 #include "PresetBrowser.h"
 #include "PastelViews.h"
+#include "MidiLearn.h"
 
 class Ersa8Processor;
 
@@ -38,6 +39,8 @@ private:
     juce::TextButton prevBtn { "<" }, nextBtn { ">" }, initBtn { "INIT" }, panicBtn { "PANIC" };
     juce::TextButton undoBtn { juce::String::fromUTF8("\xe2\x86\xb6") }, redoBtn { juce::String::fromUTF8("\xe2\x86\xb7") };
     juce::TextButton randBtn { "RANDOM" }, mutateBtn { "MUTATE" }, locksBtn { "LOCKS" };
+    pastel::MidiLearnButton midiBtn;
+    int shownProgram = -1; // preset knob moves the program behind the UI's back
     std::unique_ptr<OutputScope> scope;
     void timerCallback() override; // undo / redo enable state
     std::unique_ptr<PresetBrowser> browser;

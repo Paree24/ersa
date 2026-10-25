@@ -213,6 +213,13 @@ int main(int argc, char** argv)
         setFactoryDirsForTest(repoFactory, tmpOver);
         printf("factory dir: %s\n", repoFactory.getFullPathName().toRawUTF8());
     }
+    {
+        // MIDI learn maps go to a scratch folder, never the user's ~/.config
+        juce::File learnDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                  .getChildFile("ersa-harness-midilearn");
+        learnDir.deleteRecursively();
+        pastel::MidiLearn::setDirectoryForTest(learnDir);
+    }
     if (argc > 1 && juce::String(argv[1]) == "--loudness") return loudnessSurvey();
     if (argc > 3 && juce::String(argv[1]) == "--arpprobe") return arpProbe(juce::String(argv[2]).getIntValue(), juce::String(argv[3]).getDoubleValue(), argc > 4 ? juce::String(argv[4]).getDoubleValue() : juce::String(argv[3]).getDoubleValue());
     if (argc > 2 && juce::String(argv[1]) == "--leadprobe") return leadProbe(juce::File(argv[2]));
@@ -258,6 +265,76 @@ int main(int argc, char** argv)
             if (i == nprog - 1) printf("walk clean: no poisoning preset found\n");
         }
         p3->releaseResources();
+    }
+    printf("--- MIDI learn ---\n");
+    {
+        using Enc = pastel::MidiLearn::Enc;
+        auto det = [](std::vector<int> v) { return pastel::MidiLearn::detectEncoding(v); };
+        CHECK(det({ 65, 65, 65, 65 }) == Enc::offset64 && det({ 63, 62, 63 }) == Enc::offset64, "Arturia-style 64+n encoder detected");
+        CHECK(det({ 1, 1, 2, 1 }) == Enc::twos && det({ 127, 127, 126 }) == Enc::twos, "two's complement encoder detected");
+        CHECK(det({ 60, 61, 62, 63 }) == Enc::absolute && det({ 0, 1, 2, 3 }) == Enc::absolute
+              && det({ 127, 126, 125, 124 }) == Enc::absolute, "turned absolute knob stays absolute");
+
+        auto cc = [](int num, int val) { juce::MidiBuffer m; m.addEvent(juce::MidiMessage::controllerEvent(1, num, val), 0); return m; };
+        std::unique_ptr<Ersa8Processor> a(new Ersa8Processor());
+        auto& ml = a->midiLearn;
+        ml.clearAll();
+        auto* cut = a->apvts.getParameter("cutoff");
+        ml.setLearning(true);
+        cut->beginChangeGesture(); cut->endChangeGesture(); // touching the knob on screen arms it
+        CHECK(ml.getArmedName() == cut->getName(40), "touching a control arms it");
+        const float before = cut->getValue();
+        for (int i = 0; i < 4; ++i) ml.process(cc(74, 65));
+        CHECK(std::abs(cut->getValue() - before) < 1e-6f, "learning CCs never move the armed control");
+        ml.tick();
+        auto maps = ml.getMappings();
+        CHECK(maps.size() == 1 && maps[0].cc == 74 && maps[0].paramId == "cutoff" && maps[0].enc == Enc::offset64,
+              "CC 74 learned as a relative knob on cutoff");
+        ml.setLearning(false);
+        ml.process(cc(74, 66));
+        const float up = cut->getValue();
+        ml.process(cc(74, 62));
+        CHECK(up > before && cut->getValue() < up, "endless knob turns cutoff the right way both directions");
+
+        // a second instance (any project) picks the mapping up from disk
+        std::unique_ptr<Ersa8Processor> b(new Ersa8Processor());
+        auto* cutB = b->apvts.getParameter("cutoff");
+        const float bBefore = cutB->getValue();
+        b->midiLearn.process(cc(74, 70));
+        CHECK(b->midiLearn.getMappings().size() == 1 && cutB->getValue() > bBefore, "mapping is global: a new instance has it");
+
+        // re-learning the same control moves it to the new knob; absolute knob sets directly
+        ml.setLearning(true);
+        cut->beginChangeGesture(); cut->endChangeGesture();
+        for (int v : { 10, 11, 12, 13 }) ml.process(cc(21, v));
+        ml.tick();
+        maps = ml.getMappings();
+        CHECK(maps.size() == 1 && maps[0].cc == 21 && maps[0].enc == Enc::absolute, "re-learning moves the control to the new knob");
+        ml.setLearning(false);
+        ml.process(cc(21, 127));
+        CHECK(std::abs(cut->getValue() - 1.0f) < 1e-6f, "absolute knob sets the value directly");
+
+        // preset knob: one nudge is enough to learn it, each detent steps one preset
+        int stepped = 0;
+        ml.onPresetStep = [&](int d) { stepped += d; };
+        ml.armPresetKnob();
+        ml.process(cc(114, 1));
+        for (int i = 0; i < 10; ++i) ml.tick();
+        CHECK(ml.getPresetKnobCC() == 114, "preset knob learned from one nudge");
+        ml.process(cc(114, 1)); ml.process(cc(114, 3));
+        ml.tick();
+        ml.process(cc(114, 127));
+        ml.tick();
+        CHECK(stepped == 1, "preset knob: two steps forward, one back");
+        ml.onPresetStep = nullptr;
+
+        std::unique_ptr<Ersa8Processor> c(new Ersa8Processor());
+        const int prog = c->getCurrentProgram();
+        c->midiLearn.process(cc(114, 1));
+        c->midiLearn.tick();
+        CHECK(c->getCurrentProgram() == prog + 1, "preset knob loads the next program in a new instance");
+        ml.clearAll();
+        CHECK(ml.getMappings().empty() && ml.getPresetKnobCC() < 0, "clear all");
     }
     printf("--- creating processor ---\n");
     printf("--- creating processor ---\n");
