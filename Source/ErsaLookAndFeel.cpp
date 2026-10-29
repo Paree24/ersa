@@ -21,8 +21,8 @@ ErsaLookAndFeel::ErsaLookAndFeel()
     pastel::Theme::faint   = ErsaColors::faint;
     pastel::Theme::handle  = ErsaColors::handle;
     pastel::Theme::ink     = ErsaColors::barText;
-    pastel::Theme::regular = latoReg;
-    pastel::Theme::bold    = latoBold;
+    pastel::ThemeFonts::getInstance()->regular = latoReg;
+    pastel::ThemeFonts::getInstance()->bold    = latoBold;
 }
 
 juce::Font ErsaLookAndFeel::uiFont(float h) const
