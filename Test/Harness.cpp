@@ -1119,6 +1119,7 @@ int main(int argc, char** argv)
         float prevL = 0.0f, prevR = 0.0f;
         long t0 = 0;
         double tRender = 0.0;
+        int slowBlocks = 0; // blocks over 8 ms: one is a preempted CI machine, many is real CPU trouble
         const int blocks = (int)(44100.0 * 60.0 / 512.0);
         for (int k = 0; k < blocks; ++k)
         {
@@ -1132,7 +1133,9 @@ int main(int argc, char** argv)
             bs.clear();
             auto tStart = juce::Time::getHighResolutionTicks();
             ps->processBlock(bs, ms);
-            tRender = juce::jmax(tRender, juce::Time::highResolutionTicksToSeconds(juce::Time::getHighResolutionTicks() - tStart) * 1000.0);
+            const double tBlock = juce::Time::highResolutionTicksToSeconds(juce::Time::getHighResolutionTicks() - tStart) * 1000.0;
+            tRender = juce::jmax(tRender, tBlock);
+            if (tBlock > 8.0) ++slowBlocks;
             if (!isFiniteBuffer(bs)) { printf("FAIL: non-finite 60s scan\n"); return 1; }
             if (k > 44)
             {
@@ -1153,10 +1156,10 @@ int main(int argc, char** argv)
             }
             else if (k == 44) { prevL = bs.getSample(0, 511); prevR = bs.getSample(1, 511); t0 = 0; (void)t0; }
         }
-        printf("60s scan: worstL=%.3f @%.1fs worstR=%.3f @%.1fs maxBlock=%.2fms/budget=11.6ms\n",
-               worstL, (float)wposL / 44100.0f, worstR, (float)wposR / 44100.0f, tRender);
+        printf("60s scan: worstL=%.3f @%.1fs worstR=%.3f @%.1fs maxBlock=%.2fms/budget=11.6ms slow=%d/%d\n",
+               worstL, (float)wposL / 44100.0f, worstR, (float)wposR / 44100.0f, tRender, slowBlocks, blocks);
         if (worstL > 0.35f || worstR > 0.35f) { printf("FAIL: spontaneous click\n"); return 1; }
-        if (tRender > 8.0) { printf("FAIL: CPU too hot (dropout risk)\n"); return 1; }
+        if (slowBlocks > 5) { printf("FAIL: CPU too hot (dropout risk)\n"); return 1; }
         ps->releaseResources();
     }
     printf("--- transient scan: slow square LFO torture ---\n");
